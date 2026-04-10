@@ -69,17 +69,18 @@ function isPositiveFinite(n: number): boolean {
   return Number.isFinite(n) && n > 0;
 }
 
-function getYesterdayString(): string {
-  const today = new Date();
-  const yesterday = new Date(
-    today.getFullYear(),
-    today.getMonth(),
-    today.getDate() - 1,
-  );
-  const year = yesterday.getFullYear();
-  const month = String(yesterday.getMonth() + 1).padStart(2, '0');
-  const day = String(yesterday.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+function shiftDateStringBackOneDay(dateString: string | null): string | null {
+  if (dateString === null) return null;
+
+  const [year, month, day] = dateString.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() - 1);
+
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+
+  return `${y}-${m}-${d}`;
 }
 
 export const useHydrationStore = create<HydrationState & HydrationActions>()(
@@ -201,7 +202,12 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
       },
 
       _setLastOpenedDateToYesterday: () => {
-        set({ lastOpenedDate: getYesterdayString() });
+        const state = get();
+      
+        set({
+          lastOpenedDate: shiftDateStringBackOneDay(state.lastOpenedDate),
+          lastGoalHitDate: shiftDateStringBackOneDay(state.lastGoalHitDate),
+        });
       },
     }),
     {
