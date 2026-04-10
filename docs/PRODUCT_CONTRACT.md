@@ -95,22 +95,56 @@ The user does **not** manually choose or edit the goal during onboarding in the 
 ---
 
 ## Goal Recommendation Rule
-The hydration goal is computed silently using a simple internal formula based on:
+The hydration goal is computed silently using a locked formula based on:
 - age
 - sex
-- weight
+- weight (entered in pounds)
 - activity level
 - climate context
 
 This is an MVP heuristic, not medical advice.
 
-The formula should be:
+The formula is:
 - simple
 - explainable
 - deterministic
 - easy to debug
 
-The result should be stored as the user's daily goal in ounces.
+### Locked MVP Formula
+
+```
+baseOz = weightLb × 0.5
+
+sexAdjOz:
+  male                → +8
+  female              → +0
+  other/prefer not    → +4
+
+ageAdjOz:
+  under 18            → -8
+  18–34               → +0
+  35–54               → +4
+  55+                 → +8
+
+activityAdjOz:
+  low                 → +0
+  medium              → +8
+  high                → +16
+
+climateAdjOz:
+  cool                → +0
+  moderate            → +6
+  hot                 → +12
+
+total = baseOz + sexAdjOz + ageAdjOz + activityAdjOz + climateAdjOz
+recommendedGoalOz = round(total to nearest 4oz)
+recommendedGoalOz = clamp(recommendedGoalOz, min: 48oz, max: 160oz)
+dailyGoalOz = recommendedGoalOz
+```
+
+Both `recommendedGoalOz` and `dailyGoalOz` are always stored. In the MVP they will match. Storing both keeps the schema stable for future flexibility.
+
+The result is stored as the user's daily goal in ounces.
 
 ---
 
@@ -129,6 +163,8 @@ These should correspond to suggested temperature ranges for user understanding:
 
 Climate can be changed by the user daily from the main app experience.
 
+When the user changes climate, `dailyGoalOz` is recomputed immediately using the locked formula with the new climate value. This affects the current day's remaining target only. It does not retroactively change `todayIntakeOz` or any streak history.
+
 No live location or weather API is required for MVP.
 
 ---
@@ -146,6 +182,20 @@ The bottle visual represents the **selected log amount**, not the full-day total
 
 Example:
 - a 32oz selected log amount corresponds to a full bottle visual
+
+### Logging Model
+
+All logging goes through a single `logWater(amountOz)` action.
+
+**Quick-log buttons:**
+- call `logWater(amountOz)` immediately for speed
+- also set `draftLogOz = amountOz` so the bottle UI reflects the last selected amount
+
+**Slider / custom flow:**
+- updates `draftLogOz` as the user adjusts
+- a confirm/log action then calls `logWater(draftLogOz)`
+
+This keeps quick-log frictionless, `draftLogOz` meaningful for the bottle interaction, and the logging path consistent regardless of input method.
 
 ---
 
@@ -223,13 +273,17 @@ The architecture must clearly separate:
 The architecture must support:
 - onboarding completion state
 - daily goal calculation
-- climate changes
-- streak tracking
-- daily reset behavior
+- climate changes triggering goal recomputation
+- streak tracking with immediate success detection
+- daily reset behavior using local calendar date comparison
 - selected bottle state
 - bottle-color state
 - draft log amount
 - future bottle-draining UI behavior
+
+**Required persisted date fields:**
+- `lastOpenedDate` — local calendar date string of the last app open; used for new-day detection
+- `lastGoalHitDate` — local calendar date string of the last day the user hit their goal; used for streak evaluation
 
 ---
 

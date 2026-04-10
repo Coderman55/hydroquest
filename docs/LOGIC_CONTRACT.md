@@ -19,19 +19,44 @@
 1. The daily goal is computed automatically from onboarding data.
 2. The formula is a simple MVP heuristic, not medical advice.
 3. The formula must be deterministic: the same inputs always produce the same goal.
-4. The formula should use:
-   - weight
-   - age
-   - sex
-   - activity level
-   - climate
-5. The final output is stored as dailyGoalOz.
+4. The formula uses: weight (in pounds), age, sex, activity level, and climate.
+5. Both `recommendedGoalOz` and `dailyGoalOz` are always stored. In the MVP they will always match.
 6. The computed daily goal is set silently and is not user-editable during the MVP.
-7. If the user later changes a goal-driving variable that the PM decides should affect the goal, the app may recompute the daily goal.
+7. Climate is a goal-driving variable. Changing climate after onboarding triggers an immediate recomputation of `dailyGoalOz` for the current day (see §3).
 
-> **Open question (Flag 2):** The exact formula using these five inputs has not been defined yet. The formula must be agreed on and documented in `lib/` before the hydration store can be implemented. It should output a reasonable oz value in the range of approximately 60–120oz for a typical adult user.
+### Locked MVP Formula
 
-> **Open question (Flag 4):** Climate is a goal input and can be changed daily. It is not yet decided whether a climate change after onboarding should trigger a goal recomputation. This must be resolved before the store is built. The store architecture differs depending on the answer.
+```
+baseOz         = weightLb × 0.5
+
+sexAdjOz:
+  male               → +8
+  female             → +0
+  other/prefer not   → +4
+
+ageAdjOz:
+  under 18           → -8
+  18–34              → +0
+  35–54              → +4
+  55+                → +8
+
+activityAdjOz:
+  low                → +0
+  medium             → +8
+  high               → +16
+
+climateAdjOz:
+  cool               → +0
+  moderate           → +6
+  hot                → +12
+
+total = baseOz + sexAdjOz + ageAdjOz + activityAdjOz + climateAdjOz
+recommendedGoalOz = round(total to nearest 4oz)
+recommendedGoalOz = clamp(recommendedGoalOz, min: 48, max: 160)
+dailyGoalOz = recommendedGoalOz
+```
+
+This formula is implemented in `lib/calculateGoal.ts` and must not be duplicated elsewhere.
 
 ---
 
@@ -41,47 +66,52 @@
    - cool
    - moderate
    - hot
-3. Climate should be understandable through suggested temperature ranges:
+3. Suggested temperature ranges for user understanding:
    - cool: below 60°F
    - moderate: 60°F to 80°F
    - hot: above 80°F
 4. Climate can be changed after onboarding from the main hydration experience.
 5. Climate changes are persisted.
-6. For MVP simplicity, climate changes do not need a live weather integration.
+6. When the user changes climate, `dailyGoalOz` is recomputed immediately using the locked formula with the new climate value.
+7. A climate change does not retroactively change `todayIntakeOz`.
+8. A climate change does not retroactively change `streakCount` or `lastGoalHitDate`.
+9. A climate change only affects the current day's goal target and therefore the derived `remainingOz`.
+10. No live location or weather API is required for MVP.
 
 ---
 
 ## 4. Main hydration state
-1. todayIntakeOz is the total water logged for the current day.
-2. draftLogOz is the current amount selected before logging.
-3. dailyGoalOz is the user's automatically computed daily hydration target.
-4. recommendedGoalOz may be stored separately if useful for debugging or future flexibility.
-5. selectedBottleId stores the chosen bottle archetype.
-6. bottleColor stores the chosen bottle color.
-7. streakCount stores the current streak of successful hydration days.
-
-> **Open question (Flag 5):** Whether `recommendedGoalOz` is always stored or only optionally stored should be decided before the schema is finalized. Recommend always storing it to simplify future debugging and avoid schema drift.
+1. `todayIntakeOz` — total water logged for the current day.
+2. `draftLogOz` — the amount currently selected before logging; used by the bottle visual and the slider/custom flow.
+3. `dailyGoalOz` — the user's automatically computed daily hydration target.
+4. `recommendedGoalOz` — always stored; equals `dailyGoalOz` in the MVP; kept separate for schema stability and future flexibility.
+5. `selectedBottleId` — the chosen bottle archetype.
+6. `bottleColor` — the chosen bottle color.
+7. `streakCount` — the current streak of consecutive successful hydration days.
+8. `lastOpenedDate` — local calendar date string (YYYY-MM-DD) of the last app open; used for new-day detection and reset.
+9. `lastGoalHitDate` — local calendar date string (YYYY-MM-DD) of the last day the user reached or exceeded their goal; used for streak evaluation.
 
 ---
 
 ## 5. Bottle behavior
-1. The bottle visual represents the currently selected log amount, not the full-day total.
-2. A full visual bottle corresponds to the maximum selected amount for that interaction.
-3. The visual model should support a "draining bottle" concept.
+1. The bottle visual represents the currently selected log amount (`draftLogOz`), not the full-day total.
+2. A full visual bottle corresponds to the maximum selected amount for that interaction cycle.
+3. The visual model supports a "draining bottle" concept.
 4. When the selected amount is consumed/logged, the bottle can visually drain toward empty.
 5. When the bottle empties, the UI may celebrate completion and allow a refill/reset interaction.
-6. On Day 2, the store only needs to support this logic concept; polished animation can come later.
-
-> **Open question (Flag 3):** It is not yet specified whether tapping a quick-log button (a) sets `draftLogOz` first and then logs it, or (b) bypasses `draftLogOz` entirely and adds directly to `todayIntakeOz`. This must be decided before building the logging UI. The bottle visual behavior differs between the two models.
+6. On Day 2, the store only needs to support this logic concept; polished animation can be implemented later.
 
 ---
 
 ## 6. Quick-log behavior
-1. Quick-log buttons should log common fixed amounts such as 4oz, 16oz, and 32oz.
-2. Pressing a quick-log button should add that amount to todayIntakeOz.
-3. Quick-log actions should be deterministic and immediate.
-4. Quick-log amounts must not corrupt state even if the user is already above goal.
-5. Going above goal is allowed.
+1. Quick-log buttons log common fixed amounts such as 4oz, 16oz, and 32oz.
+2. All logging — from any input method — goes through a single `logWater(amountOz)` action.
+3. Pressing a quick-log button:
+   - calls `logWater(amountOz)` immediately, adding that amount to `todayIntakeOz`
+   - also sets `draftLogOz = amountOz` so the bottle UI reflects the last selected amount
+4. Quick-log actions are deterministic and immediate. No confirmation step required.
+5. Quick-log amounts must not corrupt state even if the user is already above goal.
+6. Going above goal is allowed.
 
 ---
 
@@ -103,21 +133,51 @@
 ---
 
 ## 9. Streak behavior
-1. A streak day counts when the user reaches or exceeds their goal by the end of the local day.
+1. A streak day counts when the user reaches or exceeds their goal on a given local calendar day.
 2. If the user misses a day, the streak resets to zero.
 3. If the user hits the goal on consecutive days, the streak increments by one per successful day.
 4. Exceeding the goal still counts as success.
+5. **Streak increments immediately on success** — the moment `todayIntakeOz >= dailyGoalOz` and `lastGoalHitDate != today`:
+   - increment `streakCount` by 1
+   - set `lastGoalHitDate = today`
+   - this ensures the streak is always current and does not wait for the next app open
+6. Subsequent logs on the same day after the goal is already hit do not increment the streak again (enforced by the `lastGoalHitDate != today` guard).
 
 ---
 
 ## 10. New-day reset behavior
-1. The app should detect when a new local calendar day has started.
-2. When a new day begins, todayIntakeOz resets to zero.
-3. The app should evaluate whether the previous day counted toward the streak before resetting.
-4. Daily values reset; persistent profile data does not.
-5. The app must store enough date information to avoid repeating streak updates incorrectly.
+The app has no background process. All date logic runs on app open only.
 
-> **Implementation risk (Flag 1):** The app has no background process. Streak evaluation and daily reset can only happen when the app is opened. If the user skips a day and opens the app two days later, the app must correctly infer that a day was missed. This requires storing `lastOpenedDate` (or equivalent) so the app can compute the gap on launch. The exact missed-day detection logic must be defined before implementing streak or reset behavior.
+### On every app open, run this exact sequence:
+
+```
+today = local calendar date string (YYYY-MM-DD)
+daysSinceLastOpen = calendar days between lastOpenedDate and today
+
+if daysSinceLastOpen == 0:
+  → do nothing (same session or same day re-open)
+
+if daysSinceLastOpen == 1:
+  → if lastGoalHitDate == lastOpenedDate:
+      keep streakCount as-is (yesterday was a success, already counted)
+    else:
+      set streakCount = 0 (yesterday was missed)
+  → reset todayIntakeOz = 0
+  → recompute dailyGoalOz using current profile + climate
+  → set lastOpenedDate = today
+
+if daysSinceLastOpen > 1:
+  → set streakCount = 0 (one or more days were skipped)
+  → reset todayIntakeOz = 0
+  → recompute dailyGoalOz using current profile + climate
+  → set lastOpenedDate = today
+```
+
+Additional rules:
+1. Daily values reset (`todayIntakeOz`); persistent profile data does not.
+2. `lastOpenedDate` is always updated to today after the check runs.
+3. On the very first app open (no `lastOpenedDate` stored), treat as a fresh state — no streak evaluation needed.
+4. Date strings must use local calendar time, not UTC, to avoid midnight edge-case bugs.
 
 ---
 
