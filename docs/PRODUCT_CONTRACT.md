@@ -192,8 +192,16 @@ All logging goes through a single `logWater(amountOz)` action.
 - also set `draftLogOz = amountOz` so the bottle UI reflects the last selected amount
 
 **Slider / custom flow:**
-- updates `draftLogOz` as the user adjusts
-- a confirm/log action then calls `logWater(draftLogOz)`
+- the slider is **always visible** on the main hydration screen — not hidden behind a button
+- slider and manual numeric input update `draftLogOz` only (no immediate logging)
+- a confirm/log action calls `logWater(draftLogOz)` when the user is ready to commit
+- custom amounts are not saved settings; `draftLogOz` resets to `0` on new-day reset
+- if practical in a future iteration, the ounce label may be tap-to-type for precise entry
+
+**draftLogOz initial state:**
+- starts at `0` on first load and after a new-day reset
+- `0` means "nothing selected yet / empty bottle" — the sentinel state
+- becomes positive only through user interaction (quick-log tap or slider movement)
 
 This keeps quick-log frictionless, `draftLogOz` meaningful for the bottle interaction, and the logging path consistent regardless of input method.
 
@@ -209,6 +217,24 @@ Preferred visual direction:
 
 For Day 2 architecture, the store only needs to support this interaction model.
 The final polished draining animation and refill celebration can be implemented later.
+
+### Locked bottle capacities (MVP)
+| Archetype | Capacity |
+|---|---|
+| Sport Curve | 24 oz |
+| Block Tumbler | 30 oz |
+
+### Bottle fill math
+```
+bottleFillPercent = min(draftLogOz / selectedBottleCapacityOz, 1.0)
+```
+
+- Below capacity: bottle shows a proportional fill level
+- At or above capacity: bottle shows as visually full (capped at 1.0)
+- The exact selected ounce amount is always shown in text
+- Example: 32oz quick-log with a 24oz Sport Curve shows a full bottle and displays "32 oz"
+- No multi-bottle or overflow visualization in the MVP
+- `draftLogOz = 0`: bottle shows empty
 
 ---
 

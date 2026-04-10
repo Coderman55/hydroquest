@@ -82,7 +82,7 @@ This formula is implemented in `lib/calculateGoal.ts` and must not be duplicated
 
 ## 4. Main hydration state
 1. `todayIntakeOz` — total water logged for the current day.
-2. `draftLogOz` — the amount currently selected before logging; used by the bottle visual and the slider/custom flow.
+2. `draftLogOz` — the amount currently selected before logging; used by the bottle visual and the slider/custom flow. Starts at `0` on first load and after a new-day reset. `0` is a sentinel meaning "nothing selected yet / empty bottle." All positive values represent a user-selected amount.
 3. `dailyGoalOz` — the user's automatically computed daily hydration target.
 4. `recommendedGoalOz` — always stored; equals `dailyGoalOz` in the MVP; kept separate for schema stability and future flexibility.
 5. `selectedBottleId` — the chosen bottle archetype.
@@ -94,12 +94,33 @@ This formula is implemented in `lib/calculateGoal.ts` and must not be duplicated
 ---
 
 ## 5. Bottle behavior
-1. The bottle visual represents the currently selected log amount (`draftLogOz`), not the full-day total.
-2. A full visual bottle corresponds to the maximum selected amount for that interaction cycle.
-3. The visual model supports a "draining bottle" concept.
-4. When the selected amount is consumed/logged, the bottle can visually drain toward empty.
-5. When the bottle empties, the UI may celebrate completion and allow a refill/reset interaction.
-6. On Day 2, the store only needs to support this logic concept; polished animation can be implemented later.
+
+### Locked bottle capacities (MVP)
+| Archetype | Capacity |
+|---|---|
+| Sport Curve | 24 oz |
+| Block Tumbler | 30 oz |
+
+These values are constants, not user-editable. They define the visual scale of each bottle archetype.
+
+### Fill level math
+```
+selectedBottleCapacityOz = capacity of selectedBottleId (constant above)
+bottleFillPercent = min(draftLogOz / selectedBottleCapacityOz, 1.0)
+```
+
+- If `draftLogOz` is below bottle capacity, the bottle shows a proportional fill.
+- If `draftLogOz` equals or exceeds bottle capacity, the bottle shows as visually full (capped at 1.0).
+- The exact selected ounce amount is always shown in text regardless of fill level.
+- There is no multi-bottle or overflow visualization in the MVP.
+- If `draftLogOz` is `0`, the bottle shows empty (fill = 0).
+
+### Behavior rules
+1. The bottle visual represents `draftLogOz`, not the full-day total.
+2. The visual model supports a "draining bottle" concept.
+3. When the selected amount is logged, the bottle can visually drain toward empty.
+4. When the bottle empties, the UI may celebrate completion and allow a refill/reset interaction.
+5. On Day 2, the store only needs to support this logic concept; polished animation can be implemented later.
 
 ---
 
@@ -115,12 +136,16 @@ This formula is implemented in `lib/calculateGoal.ts` and must not be duplicated
 
 ---
 
-## 7. Custom amount behavior
-1. The user may enter a custom amount.
-2. The custom amount must be validated before being logged.
-3. Invalid custom values should be rejected gracefully.
-4. Valid custom amounts are added to todayIntakeOz.
-5. The app must not accept nonsense values such as empty input, non-numeric input, zero, or negative numbers.
+## 7. Slider and custom amount behavior
+1. The slider is always visible on the main hydration screen. It is not hidden behind a "custom" button.
+2. The slider and any manual numeric input update `draftLogOz` only. They do not log water immediately.
+3. A separate confirm/log action (e.g. a "Log" button) calls `logWater(draftLogOz)` to commit the amount.
+4. Custom amount is not a saved setting. It resets to `0` on new-day reset and is not persisted.
+5. The user can update the selected amount at any time during the session by adjusting the slider or typing a value.
+6. If practical in a future UI iteration, the ounce label may be tap-to-type for precise numeric entry. For Day 2, a simple numeric input field is acceptable.
+7. Before calling `logWater(draftLogOz)` from the confirm action, the current `draftLogOz` must be validated: it must be a finite number greater than zero. If invalid, the log is rejected and no state changes.
+8. The app must not accept custom values of zero, negative numbers, non-numeric input, NaN, or non-finite values.
+9. There is no upper cap enforced in the store for custom log amounts — a single large entry is allowed. The goal cap applies to the daily target, not individual entries.
 
 ---
 
@@ -137,11 +162,12 @@ This formula is implemented in `lib/calculateGoal.ts` and must not be duplicated
 2. If the user misses a day, the streak resets to zero.
 3. If the user hits the goal on consecutive days, the streak increments by one per successful day.
 4. Exceeding the goal still counts as success.
-5. **Streak increments immediately on success** — the moment `todayIntakeOz >= dailyGoalOz` and `lastGoalHitDate != today`:
+5. `streakCount` is initialized to `0` after onboarding completes. It increments only when the user actually reaches or exceeds the goal for the first time on a local calendar day.
+6. **Streak increments immediately on success** — the moment `todayIntakeOz >= dailyGoalOz` and `lastGoalHitDate != today`:
    - increment `streakCount` by 1
    - set `lastGoalHitDate = today`
    - this ensures the streak is always current and does not wait for the next app open
-6. Subsequent logs on the same day after the goal is already hit do not increment the streak again (enforced by the `lastGoalHitDate != today` guard).
+7. Subsequent logs on the same day after the goal is already hit do not increment the streak again (enforced by the `lastGoalHitDate != today` guard).
 
 ---
 
@@ -174,10 +200,11 @@ if daysSinceLastOpen > 1:
 ```
 
 Additional rules:
-1. Daily values reset (`todayIntakeOz`); persistent profile data does not.
+1. Daily values reset (`todayIntakeOz`, `draftLogOz` → `0`); persistent profile data does not.
 2. `lastOpenedDate` is always updated to today after the check runs.
 3. On the very first app open (no `lastOpenedDate` stored), treat as a fresh state — no streak evaluation needed.
 4. Date strings must use local calendar time, not UTC, to avoid midnight edge-case bugs.
+5. **Goal recomputation on new-day open is the canonical daily refresh.** When `runNewDayCheck()` fires on a new day, it always calls `calculateGoal()` with the current stored profile and climate. This is not a behavior change — it simply ensures the current day's goal reflects the user's stored climate preference. It does not override any streak history or intake from the day just ended.
 
 ---
 
@@ -196,3 +223,12 @@ Additional rules:
 3. Missing required data should block completion of onboarding.
 4. The app should prefer simple safeguards over complex recovery logic.
 5. The app should fail predictably and visibly during development rather than silently corrupting state.
+
+### draftLogOz validity rules
+6. `draftLogOz = 0` is valid only as the initial/cleared sentinel state. It is set to `0` on first load and on new-day reset. It must not be set to `0` through normal user interaction.
+7. `setDraftLog(amountOz)` must accept `0` only when called explicitly for initialization or clear (e.g. during new-day reset). In all other call sites it should only be called with a positive value.
+8. If `setDraftLog` is called with a negative number, `NaN`, or a non-finite value from a user interaction path, the call must be rejected and `draftLogOz` must remain unchanged.
+
+### logWater validity rules
+9. `logWater(amountOz)` must reject any call where `amountOz` is `0`, negative, `NaN`, or non-finite. On rejection, `todayIntakeOz` must not change, `draftLogOz` must not change, and no streak evaluation must run.
+10. Quick-log buttons use hardcoded positive values and will never produce an invalid call under normal conditions, but the action-level guard must still exist.
