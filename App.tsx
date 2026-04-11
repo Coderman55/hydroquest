@@ -14,18 +14,12 @@ import {
 } from 'react-native';
 
 import {
-  ACTIVITY_LEVELS,
   BOTTLE_CAPACITIES,
-  BOTTLE_COLORS,
-  BOTTLE_IDS,
   CLIMATE_OPTIONS,
-  SEX_OPTIONS,
-  type ActivityLevel,
-  type BottleColor,
-  type BottleId,
   type Climate,
-  type Sex,
 } from './constants';
+import { palette } from './constants/theme';
+import { OnboardingFlow } from './components/OnboardingFlow';
 import { useHydrationStore } from './store/useHydrationStore';
 import { useProfileStore } from './store/useProfileStore';
 
@@ -68,142 +62,9 @@ export default function App() {
 
   return (
     <>
-      {onboardingComplete ? <MainPanel /> : <OnboardingPanel />}
+      {onboardingComplete ? <MainPanel /> : <OnboardingFlow onComplete={() => {}} />}
       <StatusBar style="auto" />
     </>
-  );
-}
-
-// ─── Onboarding panel ─────────────────────────────────────────────────────────
-
-function OnboardingPanel() {
-  const {
-    age, sex, weightLb, activityLevel, climate,
-    selectedBottleId, bottleColor,
-    setProfileField, completeOnboarding,
-  } = useProfileStore();
-
-  // Text inputs need local string state; we parse on submit.
-  const [ageText, setAgeText] = useState(age !== null ? String(age) : '');
-  const [weightText, setWeightText] = useState(weightLb !== null ? String(weightLb) : '');
-  const [error, setError] = useState<string | null>(null);
-
-  function handleComplete() {
-    const parsedAge = parseInt(ageText, 10);
-    const parsedWeight = parseFloat(weightText);
-
-    if (!Number.isFinite(parsedAge) || parsedAge <= 0) {
-      setError('Age must be a positive number.');
-      return;
-    }
-    if (!Number.isFinite(parsedWeight) || parsedWeight <= 0) {
-      setError('Weight must be a positive number.');
-      return;
-    }
-
-    setProfileField('age', parsedAge);
-    setProfileField('weightLb', parsedWeight);
-    setError(null);
-
-    const success = completeOnboarding();
-    if (!success) {
-      setError('All 7 fields required. Check sex / activity / climate / bottle / color.');
-    }
-  }
-
-  return (
-    <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>DEBUG — Onboarding</Text>
-
-      <Field label="Age">
-        <TextInput
-          style={styles.input}
-          keyboardType="number-pad"
-          value={ageText}
-          onChangeText={setAgeText}
-          placeholder="e.g. 30"
-        />
-      </Field>
-
-      <Field label="Weight (lbs)">
-        <TextInput
-          style={styles.input}
-          keyboardType="decimal-pad"
-          value={weightText}
-          onChangeText={setWeightText}
-          placeholder="e.g. 160"
-        />
-      </Field>
-
-      <Field label={`Sex  [${sex ?? '—'}]`}>
-        <ButtonRow>
-          {SEX_OPTIONS.map((opt) => (
-            <Button
-              key={opt}
-              title={opt}
-              onPress={() => setProfileField('sex', opt as Sex)}
-              color={sex === opt ? '#007AFF' : '#999'}
-            />
-          ))}
-        </ButtonRow>
-      </Field>
-
-      <Field label={`Activity  [${activityLevel ?? '—'}]`}>
-        <ButtonRow>
-          {ACTIVITY_LEVELS.map((opt) => (
-            <Button
-              key={opt}
-              title={opt}
-              onPress={() => setProfileField('activityLevel', opt as ActivityLevel)}
-              color={activityLevel === opt ? '#007AFF' : '#999'}
-            />
-          ))}
-        </ButtonRow>
-      </Field>
-
-      <Field label={`Climate  [${climate ?? '—'}]`}>
-        <ButtonRow>
-          {CLIMATE_OPTIONS.map((opt) => (
-            <Button
-              key={opt}
-              title={opt}
-              onPress={() => setProfileField('climate', opt as Climate)}
-              color={climate === opt ? '#007AFF' : '#999'}
-            />
-          ))}
-        </ButtonRow>
-      </Field>
-
-      <Field label={`Bottle  [${selectedBottleId ?? '—'}]`}>
-        <ButtonRow>
-          {BOTTLE_IDS.map((id) => (
-            <Button
-              key={id}
-              title={id}
-              onPress={() => setProfileField('selectedBottleId', id as BottleId)}
-              color={selectedBottleId === id ? '#007AFF' : '#999'}
-            />
-          ))}
-        </ButtonRow>
-      </Field>
-
-      <Field label={`Color  [${bottleColor ?? '—'}]`}>
-        <ButtonRow>
-          {BOTTLE_COLORS.map((c) => (
-            <Button
-              key={c}
-              title={c}
-              onPress={() => setProfileField('bottleColor', c as BottleColor)}
-              color={bottleColor === c ? '#007AFF' : '#999'}
-            />
-          ))}
-        </ButtonRow>
-      </Field>
-
-      <Spacer />
-      <Button title="COMPLETE ONBOARDING →" onPress={handleComplete} />
-      {error !== null && <Text style={styles.error}>{error}</Text>}
-    </ScrollView>
   );
 }
 
@@ -254,6 +115,12 @@ function MainPanel() {
 
   return (
     <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+      {todayIntakeOz === 0 && (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyStateText}>Log your first sip to start your streak.</Text>
+          <Button title="Log 8 oz" onPress={() => logWater(8)} color={palette.accent} />
+        </View>
+      )}
       <Text style={styles.title}>DEBUG — Hydration State</Text>
 
       {/* ── Persisted hydration state ── */}
@@ -355,21 +222,6 @@ function MainPanel() {
 
 // ─── Layout helpers ───────────────────────────────────────────────────────────
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <View style={styles.field}>
-      <Text style={styles.fieldLabel}>{label}</Text>
-      {children}
-    </View>
-  );
-}
-
 function Section({
   label,
   children,
@@ -412,7 +264,20 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: palette.bg,
+  },
+  emptyState: {
+    backgroundColor: palette.bgSoft,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    alignItems: 'center',
+    gap: 10,
+  },
+  emptyStateText: {
+    fontSize: 14,
+    color: palette.ink,
+    textAlign: 'center',
   },
   content: {
     padding: 16,
@@ -438,15 +303,6 @@ const styles = StyleSheet.create({
     color: '#888',
     marginBottom: 6,
   },
-  // Field (onboarding panel)
-  field: {
-    marginBottom: 12,
-  },
-  fieldLabel: {
-    fontSize: 13,
-    color: '#444',
-    marginBottom: 4,
-  },
   input: {
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#bbb',
@@ -471,10 +327,5 @@ const styles = StyleSheet.create({
   monoValue: {
     fontWeight: '700',
     color: '#000',
-  },
-  error: {
-    marginTop: 10,
-    color: '#FF3B30',
-    fontSize: 13,
   },
 });
