@@ -232,3 +232,19 @@ Additional rules:
 ### logWater validity rules
 9. `logWater(amountOz)` must reject any call where `amountOz` is `0`, negative, `NaN`, or non-finite. On rejection, `todayIntakeOz` must not change, `draftLogOz` must not change, and no streak evaluation must run.
 10. Quick-log buttons use hardcoded positive values and will never produce an invalid call under normal conditions, but the action-level guard must still exist.
+
+---
+
+## 13. Undo-last-log behavior
+
+1. **One-level only.** Only the most recent successful log is undoable. There is no history model and no multi-step undo.
+2. **Undo token.** On every successful `logWater` call, the store sets `lastLogAmountOz` to that call's amount. Each new log overwrites the previous value. Calling `undoLastLog` when `lastLogAmountOz` is `null` is a no-op.
+3. **Session-only / non-persisted.** `lastLogAmountOz` and `previousLastGoalHitDate` are excluded from persistence via `partialize`. They are `null` on cold start and after any new-day reset. A user who closes and reopens the app loses the undo token; this is expected and intentional.
+4. **Token is cleared by:** using undo, making a new successful log (overwrites), app restart, new-day reset, and `resetHydration`.
+5. **Streak and goal-hit rollback.** If `undoLastLog` causes `todayIntakeOz` to drop from at-or-above the daily goal to below it, and the goal was hit today, then:
+   - `streakCount` is decremented by 1, floored at 0.
+   - `lastGoalHitDate` is restored to `previousLastGoalHitDate` — the value captured before today's goal-hit log fired.
+   - Logs made after the goal was already hit today do not overwrite `previousLastGoalHitDate`. This ensures the saved pre-hit value remains valid regardless of how many additional logs were made above goal.
+6. **No rollback when still above goal.** If the undone log leaves intake still at or above goal, streak and `lastGoalHitDate` are not changed.
+7. **`draftLogOz` after undo.** `undoLastLog` sets `draftLogOz` to `0`. The bottle clears to empty. The user must re-select an amount to log again.
+8. **Streak display.** When `streakCount === 0`, the streak display is hidden entirely. It appears once the user earns their first successful day.

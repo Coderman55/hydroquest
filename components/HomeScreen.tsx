@@ -51,8 +51,10 @@ export function HomeScreen() {
   const draftLogOz    = useHydrationStore((s) => s.draftLogOz);
   const dailyGoalOz   = useHydrationStore((s) => s.dailyGoalOz);
   const streakCount   = useHydrationStore((s) => s.streakCount);
-  const logWater      = useHydrationStore((s) => s.logWater);
-  const setDraftLog   = useHydrationStore((s) => s.setDraftLog);
+  const logWater        = useHydrationStore((s) => s.logWater);
+  const setDraftLog     = useHydrationStore((s) => s.setDraftLog);
+  const undoLastLog     = useHydrationStore((s) => s.undoLastLog);
+  const lastLogAmountOz = useHydrationStore((s) => s.lastLogAmountOz);
 
   const selectedBottleId = useProfileStore((s) => s.selectedBottleId);
   const bottleColor      = useProfileStore((s) => s.bottleColor);
@@ -202,7 +204,9 @@ export function HomeScreen() {
           <Text style={styles.settingsIcon}>⚙</Text>
         </Pressable>
         <View style={styles.topRowSpacer} />
-        <Text style={styles.streakText}>🔥 {streakCount}</Text>
+        {streakCount > 0 && (
+          <Text style={styles.streakText}>🔥 {streakCount}</Text>
+        )}
       </View>
 
       {/* ── B. Progress block ───────────────────────────────────────────────── */}
@@ -340,6 +344,19 @@ export function HomeScreen() {
             {ctaLabel}
           </Text>
         </Pressable>
+
+        {/* 4. Undo affordance — bare text link, visible only when a log is undoable */}
+        {lastLogAmountOz !== null && (
+          <Pressable
+            style={styles.undoLink}
+            onPress={undoLastLog}
+            hitSlop={8}
+          >
+            <Text style={styles.undoLinkText}>
+              Undo last log ({lastLogAmountOz} oz)
+            </Text>
+          </Pressable>
+        )}
 
       </View>
 
@@ -524,5 +541,19 @@ const styles = StyleSheet.create({
   },
   ctaTextDisabled: {
     color: palette.inkMuted,
+  },
+
+  // ── Undo link ─────────────────────────────────────────────────────────────────
+  // Bare centered text — no background, no border, no pill shape.
+  // Large paddingVertical keeps the tap target comfortable despite the quiet visual.
+  undoLink: {
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    marginTop: -spacing.xs,
+  },
+  undoLinkText: {
+    fontSize: fontSize.body,
+    fontWeight: '500',
+    color: palette.support,
   },
 });

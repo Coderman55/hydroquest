@@ -1,6 +1,7 @@
 // HydroQuest — Hydration / streak / date Zustand store.
 // Persisted to AsyncStorage via persist middleware.
-// `draftLogOz` is intentionally excluded from persistence (ephemeral UI value).
+// `draftLogOz`, `lastLogAmountOz`, and `previousLastGoalHitDate` are intentionally
+// excluded from persistence (ephemeral session values).
 //
 // This store does NOT import the profile store. To avoid circular dependencies,
 // `runNewDayCheck` accepts the current profile as a parameter — the caller
@@ -33,6 +34,20 @@ type HydrationState = {
   lastGoalHitDate: string | null;
   /** Ephemeral. Always 0 on app start. Excluded from persistence via partialize. */
   draftLogOz: number;
+  /**
+   * Ephemeral undo buffer. Holds the amount from the most recent successful log.
+   * Null means there is nothing to undo this session.
+   * Excluded from persistence — cleared on cold start and new-day reset.
+   */
+  lastLogAmountOz: number | null;
+  /**
+   * Ephemeral. Captures the value of `lastGoalHitDate` *before* the log that
+   * first triggered today's goal hit. Required so `undoLastLog` can restore the
+   * exact pre-hit date rather than guessing it.
+   * Only written when `justHitGoal` is true; never overwritten on subsequent logs.
+   * Excluded from persistence.
+   */
+  previousLastGoalHitDate: string | null;
   /** True after persist middleware finishes loading from AsyncStorage. */
   hasHydrated: boolean;
 };
@@ -50,6 +65,14 @@ type HydrationActions = {
   setHasHydrated: (value: boolean) => void;
   /** Reset everything to initial state. Used by debug "Reset All". */
   resetHydration: () => void;
+  /**
+   * Reverse the most recent successful log. One-level undo only.
+   * No-op if `lastLogAmountOz` is null.
+   * If undoing causes today's intake to drop below the daily goal — and the goal
+   * was hit today — also rolls back the streak increment and restores
+   * `lastGoalHitDate` to its pre-hit value.
+   */
+  undoLastLog: () => void;
   /** Debug-only: rewinds lastOpenedDate to yesterday so new-day logic can be tested. */
   _setLastOpenedDateToYesterday: () => void;
 };
@@ -63,6 +86,8 @@ const initialState: Omit<HydrationState, 'hasHydrated'> = {
   lastOpenedDate: null,
   lastGoalHitDate: null,
   draftLogOz: 0,
+  lastLogAmountOz: null,
+  previousLastGoalHitDate: null,
 };
 
 function isPositiveFinite(n: number): boolean {
@@ -112,11 +137,18 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
             draftLogOz: amountOz,
             streakCount: state.streakCount + 1,
             lastGoalHitDate: today,
+            lastLogAmountOz: amountOz,
+            // Capture the pre-hit date so undoLastLog can restore it exactly.
+            // Only written here — subsequent logs above goal must not overwrite it.
+            previousLastGoalHitDate: state.lastGoalHitDate,
           });
         } else {
           set({
             todayIntakeOz: newIntake,
             draftLogOz: amountOz,
+            lastLogAmountOz: amountOz,
+            // previousLastGoalHitDate intentionally not touched:
+            // if the goal was already hit earlier today, that save is still valid.
           });
         }
       },
@@ -153,6 +185,8 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
             lastOpenedDate: today,
             todayIntakeOz: 0,
             draftLogOz: 0,
+            lastLogAmountOz: null,
+            previousLastGoalHitDate: null,
           });
           return;
         }
@@ -176,6 +210,8 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
             streakCount: yesterdayWasSuccess ? state.streakCount : 0,
             todayIntakeOz: 0,
             draftLogOz: 0,
+            lastLogAmountOz: null,
+            previousLastGoalHitDate: null,
             recommendedGoalOz: newGoal.recommendedGoalOz,
             dailyGoalOz: newGoal.dailyGoalOz,
             lastOpenedDate: today,
@@ -186,6 +222,8 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
             streakCount: 0,
             todayIntakeOz: 0,
             draftLogOz: 0,
+            lastLogAmountOz: null,
+            previousLastGoalHitDate: null,
             recommendedGoalOz: newGoal.recommendedGoalOz,
             dailyGoalOz: newGoal.dailyGoalOz,
             lastOpenedDate: today,
@@ -198,12 +236,55 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
       },
 
       resetHydration: () => {
+        // initialState includes lastLogAmountOz: null and previousLastGoalHitDate: null,
+        // so both undo fields are cleared automatically here.
         set({ ...initialState });
+      },
+
+      undoLastLog: () => {
+        const state = get();
+
+        // Nothing to undo.
+        if (state.lastLogAmountOz === null) return;
+
+        const today = getTodayString();
+        const newIntake = Math.max(0, state.todayIntakeOz - state.lastLogAmountOz);
+
+        // Determine whether this undo crosses back below the goal line and whether
+        // the goal-hit event that occurred today needs to be reversed.
+        // Conditions for streak rollback (all must be true):
+        //   1. The user hit the goal at some point today (lastGoalHitDate === today).
+        //   2. Before undo the intake was at or above goal.
+        //   3. After undo the intake drops below goal.
+        const goalWasHitToday    = state.lastGoalHitDate === today;
+        const wasAtOrAboveGoal   = state.todayIntakeOz >= state.dailyGoalOz;
+        const isNowBelowGoal     = newIntake < state.dailyGoalOz;
+        const mustRollBackStreak = goalWasHitToday && wasAtOrAboveGoal && isNowBelowGoal;
+
+        if (mustRollBackStreak) {
+          set({
+            todayIntakeOz: newIntake,
+            draftLogOz: 0,
+            lastLogAmountOz: null,
+            streakCount: Math.max(0, state.streakCount - 1),
+            // Restore the exact date that was saved before today's goal-hit log.
+            // This keeps runNewDayCheck correct — it needs lastGoalHitDate to reflect
+            // the last day the goal was genuinely sustained, not today's cancelled hit.
+            lastGoalHitDate: state.previousLastGoalHitDate,
+            previousLastGoalHitDate: null,
+          });
+        } else {
+          set({
+            todayIntakeOz: newIntake,
+            draftLogOz: 0,
+            lastLogAmountOz: null,
+          });
+        }
       },
 
       _setLastOpenedDateToYesterday: () => {
         const state = get();
-      
+
         set({
           lastOpenedDate: shiftDateStringBackOneDay(state.lastOpenedDate),
           lastGoalHitDate: shiftDateStringBackOneDay(state.lastGoalHitDate),
@@ -213,7 +294,10 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
     {
       name: HYDRATION_STORE_KEY,
       storage: createJSONStorage(() => AsyncStorage),
-      // Exclude draftLogOz and hasHydrated from persistence.
+      // Exclude ephemeral fields from persistence.
+      // Persisted: schemaVersion, todayIntakeOz, dailyGoalOz, recommendedGoalOz,
+      //            streakCount, lastOpenedDate, lastGoalHitDate.
+      // Not persisted: draftLogOz, hasHydrated, lastLogAmountOz, previousLastGoalHitDate.
       partialize: (state) => ({
         schemaVersion: state.schemaVersion,
         todayIntakeOz: state.todayIntakeOz,
