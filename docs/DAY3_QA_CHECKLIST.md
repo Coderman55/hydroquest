@@ -77,13 +77,13 @@
 - [ ] Back from Screen 2 to Screen 1 → all Screen 2 inputs still present if revisit
 
 ## Goal Preview Validation (Screen 5)
-- [ ] Goal matches expected formula: `(weightLb * 0.5) + adjustments`, clamped [48–160], rounded to 4
+- [ ] Goal matches expected formula: `(weightLb * 0.40) + adjustments`, clamped [48–160], rounded to nearest 4 (midpoint ties go down)
 - [ ] Test case: 150 lb, age 30, male, moderate activity, moderate climate
-  - Expected: (150 * 0.5) + 8 + 0 + 8 + 6 = 97 oz
-  - Verify display shows 96 or 100 (rounded to nearest 4)
+  - Expected: (150 * 0.40) + 8 + 0 + 4 + 4 = 76 oz
+  - Verify display shows 76 oz
 - [ ] Test case: 120 lb, age 70, female, low activity, cool climate
-  - Expected: (120 * 0.5) + 0 + 8 + 0 + 0 = 68 oz
-  - Verify display shows 68 oz
+  - Expected: (120 * 0.40) + 0 + 8 + 0 + 0 = 56 oz
+  - Verify display shows 56 oz
 
 ## Final CTA Commit
 - [ ] Tap "Start logging" on Screen 5 calls `completeOnboarding()` exactly once

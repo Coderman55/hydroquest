@@ -52,9 +52,9 @@ function getActivityAdjOz(activity: ActivityLevel): number {
     case 'low':
       return 0;
     case 'medium':
-      return 8;
+      return 4;
     case 'high':
-      return 16;
+      return 8;
   }
 }
 
@@ -63,9 +63,9 @@ function getClimateAdjOz(climate: Climate): number {
     case 'cool':
       return 0;
     case 'moderate':
-      return 6;
+      return 4;
     case 'hot':
-      return 12;
+      return 8;
   }
 }
 
@@ -74,7 +74,10 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function roundToNearest(value: number, step: number): number {
-  return Math.round(value / step) * step;
+  const lower = Math.floor(value / step) * step;
+  const upper = lower + step;
+  // Use the upper bucket only when it is strictly closer. Ties go to lower.
+  return (upper - value) < (value - lower) ? upper : lower;
 }
 
 export function calculateGoal(inputs: GoalInputs): GoalResult {
@@ -99,7 +102,7 @@ export function calculateGoal(inputs: GoalInputs): GoalResult {
   }
 
   // After this point, TypeScript narrows: weightLb/age are number, enums are non-null.
-  const baseOz = weightLb * 0.5;
+  const baseOz = weightLb * 0.4;
   const total =
     baseOz +
     getSexAdjOz(sex) +

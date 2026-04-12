@@ -27,7 +27,7 @@
 ### Locked MVP Formula
 
 ```
-baseOz         = weightLb × 0.5
+baseOz         = weightLb × 0.40
 
 sexAdjOz:
   male               → +8
@@ -42,16 +42,16 @@ ageAdjOz:
 
 activityAdjOz:
   low                → +0
-  medium             → +8
-  high               → +16
+  medium             → +4
+  high               → +8
 
 climateAdjOz:
   cool               → +0
-  moderate           → +6
-  hot                → +12
+  moderate           → +4
+  hot                → +8
 
 total = baseOz + sexAdjOz + ageAdjOz + activityAdjOz + climateAdjOz
-recommendedGoalOz = round(total to nearest 4oz)
+recommendedGoalOz = round(total to nearest 4oz, midpoint ties go down)
 recommendedGoalOz = clamp(recommendedGoalOz, min: 48, max: 160)
 dailyGoalOz = recommendedGoalOz
 ```

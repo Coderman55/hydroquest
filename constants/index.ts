@@ -10,7 +10,7 @@ export const HYDRATION_STORE_KEY = '@hydroquest/hydration';
 export const SCHEMA_VERSION = '1';
 
 // ---------- Goal formula bounds ----------
-export const DEFAULT_GOAL_OZ = 86; // fallback when calculateGoal receives invalid input
+export const DEFAULT_GOAL_OZ = 72; // fallback when calculateGoal receives invalid input
 export const GOAL_MIN_OZ = 48;
 export const GOAL_MAX_OZ = 160;
 export const GOAL_ROUND_TO_OZ = 4;
