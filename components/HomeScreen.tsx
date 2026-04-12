@@ -134,57 +134,57 @@ export function HomeScreen() {
     // 1. goal_hit
     coachMessage =
       streakCount >= 2
-        ? 'Daily target reached. Streak intact.'
-        : 'Daily target reached. Great work today.';
+        ? 'All set for today. Streak secured.'
+        : 'Goal complete. Great work today!';
 
   } else if (isClose) {
     // 2. goal_close
     if (isVeryClose) {
-      coachMessage = 'Home stretch. Less than half a bottle left.';
+      coachMessage = 'Home stretch. Just a few sips left to hit your goal.';
     } else if (remainingOz === bottleCapacityOz) {
-      coachMessage = 'Home stretch. Exactly one bottle to go.';
+      coachMessage = 'Almost there. About one bottle to go.';
     } else {
-      coachMessage = 'Home stretch. Less than a bottle to go.';
+      coachMessage = 'Almost there. Less than one bottle to go.';
     }
 
   } else if (todayIntakeOz === 0 && timeBucket === 'morning') {
     // 3. morning_start
-    coachMessage = "Good morning. Let's get a head start.";
+    coachMessage = "Good morning! Let's get that first sip.";
 
   } else if (timeBucket === 'afternoon' && paceBucket === 'behind') {
     // 4. afternoon_slump
     if (climate === 'hot' && activityLevel !== 'low') {
-      coachMessage = 'Warm afternoon ahead. Keep your bottle moving.';
+      coachMessage = "Warm afternoon out there. Let's close the gap.";
     } else if (climate === 'hot') {
-      coachMessage = 'Warm afternoon ahead. Time to catch up.';
+      coachMessage = "Warm afternoon out there. Let's close the gap.";
     } else if (activityLevel !== 'low') {
-      coachMessage = 'Staying active? Time to catch up on water.';
+      coachMessage = 'Afternoon slump? A quick refill keeps the momentum.';
     } else {
-      coachMessage = 'Afternoon check-in. Time to close the gap.';
+      coachMessage = 'Afternoon slump? A quick refill keeps the momentum.';
     }
 
   } else if (timeBucket === 'evening' && paceBucket === 'behind') {
     // 5. evening_wind_down
     coachMessage =
       isVeryClose
-        ? 'Winding down? A few more sips finishes today.'
-        : 'Evening check-in. Just a bit left today.';
+        ? 'Almost done for the day. Just a glass or two left.'
+        : "Winding down? Let's top off that goal before bed.";
 
   } else if (paceBucket === 'onTrack' || paceBucket === 'ahead') {
     // 6. steady_pace
     coachMessage =
       paceBucket === 'ahead'
-        ? 'Ahead of pace. Keep the same rhythm.'
-        : 'Right on schedule today.';
+        ? 'Great momentum today. Sip at your leisure.'
+        : 'Pacing perfectly. Keep it up.';
 
   } else {
     // 7. default_nudge
     if (isNearBottleRange && remainingOz > bottleCapacityOz) {
-      coachMessage = 'About one refill left.';
+      coachMessage = "About one refill left. You're in a good spot.";
     } else if (isNearBottleRange) {
-      coachMessage = 'Keep going. The finish is close.';
+      coachMessage = 'Finish line in sight. Keep sipping.';
     } else {
-      coachMessage = 'Small, steady sips make the goal easier.';
+      coachMessage = 'Small, steady sips make the rest easy.';
     }
   }
 
