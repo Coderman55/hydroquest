@@ -57,6 +57,11 @@ type ProfileActions = {
    * daily goal with the new climate value (Logic §3 and §4).
    */
   setClimate: (climate: Climate) => void;
+  /**
+   * Update activity level. If onboarding is complete, immediately recompute
+   * the daily goal with the new activity level.
+   */
+  setActivityLevel: (level: ActivityLevel) => void;
   setHasHydrated: (value: boolean) => void;
   /** Reset everything to initial state. Used by debug "Reset All". */
   resetProfile: () => void;
@@ -138,6 +143,23 @@ export const useProfileStore = create<ProfileState & ProfileActions>()(
             sex: prev.sex,
             activityLevel: prev.activityLevel,
             climate, // use the new climate
+          });
+          useHydrationStore.getState().setGoal(goal);
+        }
+      },
+
+      setActivityLevel: (activityLevel) => {
+        const prev = get();
+        set({ activityLevel });
+
+        // Mirrors setClimate: recompute goal immediately after onboarding.
+        if (prev.onboardingComplete) {
+          const goal = calculateGoal({
+            weightLb: prev.weightLb,
+            age: prev.age,
+            sex: prev.sex,
+            activityLevel, // use the new activity level
+            climate: prev.climate,
           });
           useHydrationStore.getState().setGoal(goal);
         }
