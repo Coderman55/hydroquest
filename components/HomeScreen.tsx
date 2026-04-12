@@ -9,7 +9,7 @@
 //   ├── Bottle zone      — placeholder bottle  [flex: 1]
 //   └── Interaction zone — quick-log pills, slider, CTA
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Pressable,
   SafeAreaView,
@@ -36,6 +36,7 @@ import { useHydrationStore } from '../store/useHydrationStore';
 import { useProfileStore } from '../store/useProfileStore';
 import { ProfileEditSheet } from './ProfileEditSheet';
 import { CoachCard } from './CoachCard';
+import * as Haptics from 'expo-haptics';
 
 // ─── Layout constant ──────────────────────────────────────────────────────────
 
@@ -190,6 +191,11 @@ export function HomeScreen() {
   // ── Settings sheet visibility ──────────────────────────────────────────────
   const [showSettings, setShowSettings] = useState(false);
 
+  // ── Slider haptic bucket guard ─────────────────────────────────────────────
+  // Seeded on drag start so a touch at a bucket boundary doesn't fire a haptic.
+  // Programmatic value changes (undo, reset) never touch this ref.
+  const sliderBucketRef = useRef<number>(-1);
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.root}>
@@ -297,34 +303,54 @@ export function HomeScreen() {
       <View style={styles.interactionZone}>
 
         {/* 1. Quick-log pills */}
-        <View style={styles.quickLogRow}>
-          {QUICK_LOG_AMOUNTS.map((oz) => (
-            <Pressable
-              key={oz}
-              style={({ pressed }) => [
-                styles.quickLogPill,
-                pressed && styles.quickLogPillPressed,
-              ]}
-              onPress={() => logWater(oz)}
-            >
-              <Text style={styles.quickLogText}>{oz} oz</Text>
-            </Pressable>
-          ))}
+        <View style={styles.labeledGroup}>
+          <Text style={styles.eyebrowLabel}>QUICK ADD</Text>
+          <View style={styles.quickLogRow}>
+            {QUICK_LOG_AMOUNTS.map((oz) => (
+              <Pressable
+                key={oz}
+                style={({ pressed }) => [
+                  styles.quickLogPill,
+                  pressed && styles.quickLogPillPressed,
+                ]}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  logWater(oz);
+                }}
+              >
+                <Text style={styles.quickLogText}>{oz} oz</Text>
+              </Pressable>
+            ))}
+          </View>
         </View>
 
         {/* 2. Custom amount slider — range 0–40 oz, step 1 */}
-        <View style={styles.sliderRow}>
-          <Slider
-            style={styles.slider}
-            value={draftLogOz}
-            onValueChange={(val) => setDraftLog(Math.round(val))}
-            minimumValue={0}
-            maximumValue={40}
-            step={1}
-            minimumTrackTintColor={palette.accent}
-            maximumTrackTintColor={palette.bgEdge}
-            thumbTintColor={palette.accent}
-          />
+        <View style={styles.labeledGroup}>
+          <Text style={[styles.eyebrowLabel, { marginBottom: 7 }]}>CUSTOM</Text>
+          <View style={styles.sliderRow}>
+            <Slider
+              style={styles.slider}
+              value={draftLogOz}
+              onSlidingStart={(val) => {
+                sliderBucketRef.current = Math.floor(Math.round(val) / 4);
+              }}
+              onValueChange={(val) => {
+                const rounded = Math.round(val);
+                setDraftLog(rounded);
+                const bucket = Math.floor(rounded / 4);
+                if (bucket !== sliderBucketRef.current) {
+                  sliderBucketRef.current = bucket;
+                  Haptics.selectionAsync();
+                }
+              }}
+              minimumValue={0}
+              maximumValue={40}
+              step={1}
+              minimumTrackTintColor={palette.accent}
+              maximumTrackTintColor={palette.bgEdge}
+              thumbTintColor={palette.accent}
+            />
+          </View>
         </View>
 
         {/* 3. Primary CTA */}
@@ -337,7 +363,10 @@ export function HomeScreen() {
               ? styles.ctaButtonPressed
               : null,
           ]}
-          onPress={ctaDisabled ? undefined : () => logWater(draftLogOz)}
+          onPress={ctaDisabled ? undefined : () => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            logWater(draftLogOz);
+          }}
           disabled={ctaDisabled}
         >
           <Text style={[styles.ctaText, ctaDisabled && styles.ctaTextDisabled]}>
@@ -349,7 +378,10 @@ export function HomeScreen() {
         {lastLogAmountOz !== null && (
           <Pressable
             style={styles.undoLink}
-            onPress={undoLastLog}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              undoLastLog();
+            }}
             hitSlop={8}
           >
             <Text style={styles.undoLinkText}>
@@ -555,5 +587,21 @@ const styles = StyleSheet.create({
     fontSize: fontSize.body,
     fontWeight: '500',
     color: palette.support,
+  },
+
+  // ── Labeled interaction groups ─────────────────────────────────────────────
+  // Small gap inside the group keeps label visually attached to its control.
+  // Outer interactionZone gap (spacing.md) still governs rhythm between groups.
+  labeledGroup: {
+    gap: spacing.xs,
+  },
+  eyebrowLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 1.5,
+    color: palette.support,
+    textAlign: 'center',
+    opacity: 0.85,
   },
 });
