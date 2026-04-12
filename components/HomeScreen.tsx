@@ -35,6 +35,7 @@ import {
 import { useHydrationStore } from '../store/useHydrationStore';
 import { useProfileStore } from '../store/useProfileStore';
 import { ProfileEditSheet } from './ProfileEditSheet';
+import { CoachCard } from './CoachCard';
 
 // ─── Layout constant ──────────────────────────────────────────────────────────
 
@@ -55,6 +56,8 @@ export function HomeScreen() {
 
   const selectedBottleId = useProfileStore((s) => s.selectedBottleId);
   const bottleColor      = useProfileStore((s) => s.bottleColor);
+  const climate          = useProfileStore((s) => s.climate);
+  const activityLevel    = useProfileStore((s) => s.activityLevel);
 
   // ── Derived: progress ──────────────────────────────────────────────────────
   const goalPercent  = dailyGoalOz > 0 ? todayIntakeOz / dailyGoalOz : 0;
@@ -94,6 +97,93 @@ export function HomeScreen() {
   // ── CTA ────────────────────────────────────────────────────────────────────
   const ctaDisabled  = draftLogOz === 0;
   const ctaLabel     = ctaDisabled ? 'Choose an amount' : `Log ${draftLogOz} oz`;
+
+  // ── Coach message ──────────────────────────────────────────────────────────
+  // Deterministic. First matching rule wins. No randomness, no async, no store writes.
+  const hour = new Date().getHours();
+
+  const timeBucket: 'morning' | 'midday' | 'afternoon' | 'evening' =
+    hour < 11 ? 'morning'   :
+    hour < 14 ? 'midday'    :
+    hour < 18 ? 'afternoon' :
+                'evening';
+
+  // Expected completion ratio by time of day — used to gauge pace.
+  const expectedProgress =
+    timeBucket === 'morning'   ? 0.15 :
+    timeBucket === 'midday'    ? 0.35 :
+    timeBucket === 'afternoon' ? 0.60 :
+                                 0.80;
+
+  const paceBucket: 'ahead' | 'onTrack' | 'behind' =
+    goalPercent >= expectedProgress + 0.10 ? 'ahead'  :
+    goalPercent <  expectedProgress - 0.10 ? 'behind' :
+                                             'onTrack';
+
+  // Close-range helpers — keyed to how much one bottle holds.
+  const isClose           = remainingOz <= bottleCapacityOz;
+  const isVeryClose       = remainingOz <= bottleCapacityOz * 0.5;
+  const isNearBottleRange = remainingOz <= bottleCapacityOz * 1.5;
+
+  let coachMessage: string;
+
+  if (goalHit) {
+    // 1. goal_hit
+    coachMessage =
+      streakCount >= 2
+        ? 'Daily target reached. Streak intact.'
+        : 'Daily target reached. Great work today.';
+
+  } else if (isClose) {
+    // 2. goal_close
+    if (isVeryClose) {
+      coachMessage = 'Home stretch. Less than half a bottle left.';
+    } else if (remainingOz === bottleCapacityOz) {
+      coachMessage = 'Home stretch. Exactly one bottle to go.';
+    } else {
+      coachMessage = 'Home stretch. Less than a bottle to go.';
+    }
+
+  } else if (todayIntakeOz === 0 && timeBucket === 'morning') {
+    // 3. morning_start
+    coachMessage = "Good morning. Let's get a head start.";
+
+  } else if (timeBucket === 'afternoon' && paceBucket === 'behind') {
+    // 4. afternoon_slump
+    if (climate === 'hot' && activityLevel !== 'low') {
+      coachMessage = 'Warm afternoon ahead. Keep your bottle moving.';
+    } else if (climate === 'hot') {
+      coachMessage = 'Warm afternoon ahead. Time to catch up.';
+    } else if (activityLevel !== 'low') {
+      coachMessage = 'Staying active? Time to catch up on water.';
+    } else {
+      coachMessage = 'Afternoon check-in. Time to close the gap.';
+    }
+
+  } else if (timeBucket === 'evening' && paceBucket === 'behind') {
+    // 5. evening_wind_down
+    coachMessage =
+      isVeryClose
+        ? 'Winding down? A few more sips finishes today.'
+        : 'Evening check-in. Just a bit left today.';
+
+  } else if (paceBucket === 'onTrack' || paceBucket === 'ahead') {
+    // 6. steady_pace
+    coachMessage =
+      paceBucket === 'ahead'
+        ? 'Ahead of pace. Keep the same rhythm.'
+        : 'Right on schedule today.';
+
+  } else {
+    // 7. default_nudge
+    if (isNearBottleRange && remainingOz > bottleCapacityOz) {
+      coachMessage = 'About one refill left.';
+    } else if (isNearBottleRange) {
+      coachMessage = 'Keep going. The finish is close.';
+    } else {
+      coachMessage = 'Small, steady sips make the goal easier.';
+    }
+  }
 
   // ── Settings sheet visibility ──────────────────────────────────────────────
   const [showSettings, setShowSettings] = useState(false);
@@ -141,6 +231,9 @@ export function HomeScreen() {
         </View>
 
       </View>
+
+      {/* ── Coach card ──────────────────────────────────────────────────────── */}
+      <CoachCard message={coachMessage} />
 
       {/* ── C. Bottle zone ──────────────────────────────────────────────────── */}
       <View style={styles.bottleZone}>
