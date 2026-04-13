@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "hydroquest",
+    "name": "HydroQuest",
     "slug": "hydroquest",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,9 +10,10 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#FFE8D1"
     },
     "ios": {
+      "bundleIdentifier": "com.alexander.hydroquest",
       "supportsTablet": true
     },
     "android": {
@@ -25,6 +26,12 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "228db30d-67ba-4966-9d09-7ef46e4577b8"
+      }
+    },
+    "owner": "hydrodevcreate"
   }
 }
