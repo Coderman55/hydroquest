@@ -170,53 +170,50 @@ No live location or weather API is required for MVP.
 ---
 
 ## Main Hydration Interaction
-The main interaction is fast hydration logging.
+The main interaction is bottle-centered hydration logging.
 
-The app should support:
-- quick-log buttons
-- custom input
-- bottle interaction
-- visible progress feedback
+The app supports:
+- a bottle visual showing how much water is left
+- a slider to set the draft remaining level
+- a confirm CTA to log consumed water
+- a refill button to reset the digital bottle to full
+- one-level undo for the last drink or refill
 
-The bottle visual represents the **selected log amount**, not the full-day total.
-
-Example:
-- a 32oz selected log amount corresponds to a full bottle visual
+The bottle visual represents **how much water is left**, not a selected log amount.
 
 ### Logging Model
 
-All logging goes through a single `logWater(amountOz)` action.
+All intake logging goes through a single `logWater(amountOz)` action.
 
-**Quick-log buttons:**
-- call `logWater(amountOz)` immediately for speed
-- also set `draftLogOz = amountOz` so the bottle UI reflects the last selected amount
+**Reverse-fill / slider flow:**
+- the slider is always visible on the main hydration screen
+- the slider sets `draftBottleLevelOz` (local UI state only — no store write during drag)
+- slider range is `[0, bottleCapacityOz]` — always matches the selected bottle's capacity
+- the CTA computes `consumedOz = committedBottleLevelOz - draftBottleLevelOz`
+- the CTA is disabled when `consumedOz <= 0` (draft at or above committed level)
+- on confirm: `logWater(consumedOz)` is called, then `setBottleLevel(draftBottleLevelOz)`
 
-**Slider / custom flow:**
-- the slider is **always visible** on the main hydration screen — not hidden behind a button
-- slider and manual numeric input update `draftLogOz` only (no immediate logging)
-- a confirm/log action calls `logWater(draftLogOz)` when the user is ready to commit
-- custom amounts are not saved settings; `draftLogOz` resets to `0` on new-day reset
-- if practical in a future iteration, the ounce label may be tap-to-type for precise entry
+**Refill:**
+- resets `bottleLevelOz` to full capacity
+- does NOT add to `todayIntakeOz`
+- only committed "add water" action
+- disabled when the bottle is already full
 
-**draftLogOz initial state:**
-- starts at `0` on first load and after a new-day reset
-- `0` means "nothing selected yet / empty bottle" — the sentinel state
-- becomes positive only through user interaction (quick-log tap or slider movement)
+**Bottle persistence:**
+- `bottleLevelOz` persists across restarts and across midnight
+- the digital bottle does not auto-refill at midnight — it holds its state until the user refills
 
-This keeps quick-log frictionless, `draftLogOz` meaningful for the bottle interaction, and the logging path consistent regardless of input method.
+Quick-log buttons were removed in the Day 9 alpha. They bypassed bottle level and created an incoherent mental model in the reverse-fill mechanic.
 
 ---
 
 ## Bottle Visual Concept
-The bottle should be conceptually treated as a bottle the user is drinking from.
+The bottle represents how much water is **currently left** inside.
 
-Preferred visual direction:
-- the bottle **drains** as the user consumes the currently selected amount
-- when the bottle is emptied, the UI can celebrate completion
-- the user can then refill/reset the bottle for the next log cycle
-
-For Day 2 architecture, the store only needs to support this interaction model.
-The final polished draining animation and refill celebration can be implemented later.
+Visual direction:
+- the bottle **drains** as the user drags the slider down and confirms
+- when the bottle is empty, the user refills via the refill button to start the next cycle
+- the bottle previews the draft slider position before confirm — the fill level moves live during drag
 
 ### Locked bottle capacities (MVP)
 | Archetype | Capacity |
@@ -226,15 +223,14 @@ The final polished draining animation and refill celebration can be implemented 
 
 ### Bottle fill math
 ```
-bottleFillPercent = min(draftLogOz / selectedBottleCapacityOz, 1.0)
+committedBottleLevelOz = min(bottleLevelOz ?? selectedBottleCapacityOz, selectedBottleCapacityOz)
+bottleFillPercent      = min(draftBottleLevelOz / selectedBottleCapacityOz, 1.0)
 ```
 
-- Below capacity: bottle shows a proportional fill level
-- At or above capacity: bottle shows as visually full (capped at 1.0)
-- The exact selected ounce amount is always shown in text
-- Example: 32oz quick-log with a 24oz Sport Curve shows a full bottle and displays "32 oz"
+- The bottle shows `draftBottleLevelOz` during interaction (live slider preview)
+- `bottleLevelOz = null` is treated as full (first launch / migrated installs)
+- Persisted level is clamped to current capacity at the UI layer if bottle archetype changes
 - No multi-bottle or overflow visualization in the MVP
-- `draftLogOz = 0`: bottle shows empty
 
 ---
 
@@ -304,8 +300,8 @@ The architecture must support:
 - daily reset behavior using local calendar date comparison
 - selected bottle state
 - bottle-color state
-- draft log amount
-- future bottle-draining UI behavior
+- committed bottle level (persists across restarts and midnight)
+- reverse-fill interaction: slider sets draft level, CTA logs consumed ounces
 
 **Required persisted date fields:**
 - `lastOpenedDate` — local calendar date string of the last app open; used for new-day detection

@@ -82,7 +82,7 @@ This formula is implemented in `lib/calculateGoal.ts` and must not be duplicated
 
 ## 4. Main hydration state
 1. `todayIntakeOz` — total water logged for the current day.
-2. `draftLogOz` — the amount currently selected before logging; used by the bottle visual and the slider/custom flow. Starts at `0` on first load and after a new-day reset. `0` is a sentinel meaning "nothing selected yet / empty bottle." All positive values represent a user-selected amount.
+2. `bottleLevelOz` — committed ounces currently left in the digital bottle. `null` = treat as full (first launch / migrated old installs). Persisted. NOT reset on new-day — the digital bottle persists across midnight.
 3. `dailyGoalOz` — the user's automatically computed daily hydration target.
 4. `recommendedGoalOz` — always stored; equals `dailyGoalOz` in the MVP; kept separate for schema stability and future flexibility.
 5. `selectedBottleId` — the chosen bottle archetype.
@@ -90,6 +90,7 @@ This formula is implemented in `lib/calculateGoal.ts` and must not be duplicated
 7. `streakCount` — the current streak of consecutive successful hydration days.
 8. `lastOpenedDate` — local calendar date string (YYYY-MM-DD) of the last app open; used for new-day detection and reset.
 9. `lastGoalHitDate` — local calendar date string (YYYY-MM-DD) of the last day the user reached or exceeded their goal; used for streak evaluation.
+10. `lastAction` — ephemeral (not persisted). Holds the most recent committed action for one-level undo. `null` = nothing to undo this session. Cleared on cold start and new-day reset. See §13.
 
 ---
 
@@ -103,49 +104,45 @@ This formula is implemented in `lib/calculateGoal.ts` and must not be duplicated
 
 These values are constants, not user-editable. They define the visual scale of each bottle archetype.
 
-### Fill level math
+### Fill level math (reverse-fill model)
 ```
 selectedBottleCapacityOz = capacity of selectedBottleId (constant above)
-bottleFillPercent = min(draftLogOz / selectedBottleCapacityOz, 1.0)
+committedBottleLevelOz   = min(bottleLevelOz ?? selectedBottleCapacityOz, selectedBottleCapacityOz)
+bottleFillPercent        = min(draftBottleLevelOz / selectedBottleCapacityOz, 1.0)
 ```
 
-- If `draftLogOz` is below bottle capacity, the bottle shows a proportional fill.
-- If `draftLogOz` equals or exceeds bottle capacity, the bottle shows as visually full (capped at 1.0).
-- The exact selected ounce amount is always shown in text regardless of fill level.
+- `bottleLevelOz` is the committed level stored in the hydration store.
+- `draftBottleLevelOz` is local UI state set by the slider. The bottle previews the draft before confirm.
+- `null` bottle level is treated as full capacity (first launch / migrated install safety).
+- If the user's stored level exceeds current bottle capacity (e.g., after changing archetype), it is clamped at the UI layer to `selectedBottleCapacityOz`.
 - There is no multi-bottle or overflow visualization in the MVP.
-- If `draftLogOz` is `0`, the bottle shows empty (fill = 0).
 
 ### Behavior rules
-1. The bottle visual represents `draftLogOz`, not the full-day total.
-2. The visual model supports a "draining bottle" concept.
-3. When the selected amount is logged, the bottle can visually drain toward empty.
-4. When the bottle empties, the UI may celebrate completion and allow a refill/reset interaction.
-5. On Day 2, the store only needs to support this logic concept; polished animation can be implemented later.
+1. The bottle represents **how much water is left**, not how much has been consumed or selected to log.
+2. The slider sets the **draft remaining level** before confirm. The bottle previews the draft position.
+3. On CTA confirm: `consumedOz = committedBottleLevelOz - draftBottleLevelOz` is logged, then `bottleLevelOz` is updated to `draftBottleLevelOz`.
+4. Refill resets `bottleLevelOz` to full capacity. It does not add to `todayIntakeOz`.
+5. `bottleLevelOz` is NOT reset on new-day. The digital bottle persists across midnight.
+6. Upward draft movement (slider above committed level) previews but cannot be committed through the CTA. The CTA is disabled when `consumedOz <= 0`.
 
 ---
 
 ## 6. Quick-log behavior
-1. Quick-log buttons log common fixed amounts such as 4oz, 16oz, and 32oz.
-2. All logging — from any input method — goes through a single `logWater(amountOz)` action.
-3. Pressing a quick-log button:
-   - calls `logWater(amountOz)` immediately, adding that amount to `todayIntakeOz`
-   - also sets `draftLogOz = amountOz` so the bottle UI reflects the last selected amount
-4. Quick-log actions are deterministic and immediate. No confirmation step required.
-5. Quick-log amounts must not corrupt state even if the user is already above goal.
-6. Going above goal is allowed.
+Quick-log buttons were removed in the Day 9 alpha revision. They were incompatible with the reverse-fill mechanic because they called `logWater()` directly without modifying `bottleLevelOz`, which would create an incoherent state where intake rises without the bottle visually changing.
+
+All logging now goes through the reverse-fill CTA flow: slider → confirm → `logWater(consumed)` + `setBottleLevel(draft)`.
 
 ---
 
-## 7. Slider and custom amount behavior
-1. The slider is always visible on the main hydration screen. It is not hidden behind a "custom" button.
-2. The slider and any manual numeric input update `draftLogOz` only. They do not log water immediately.
-3. A separate confirm/log action (e.g. a "Log" button) calls `logWater(draftLogOz)` to commit the amount.
-4. Custom amount is not a saved setting. It resets to `0` on new-day reset and is not persisted.
-5. The user can update the selected amount at any time during the session by adjusting the slider or typing a value.
-6. If practical in a future UI iteration, the ounce label may be tap-to-type for precise numeric entry. For Day 2, a simple numeric input field is acceptable.
-7. Before calling `logWater(draftLogOz)` from the confirm action, the current `draftLogOz` must be validated: it must be a finite number greater than zero. If invalid, the log is rejected and no state changes.
-8. The app must not accept custom values of zero, negative numbers, non-numeric input, NaN, or non-finite values.
-9. There is no upper cap enforced in the store for custom log amounts — a single large entry is allowed. The goal cap applies to the daily target, not individual entries.
+## 7. Slider and CTA behavior (reverse-fill model)
+1. The slider is always visible on the main hydration screen.
+2. The slider sets `draftBottleLevelOz` — local UI state only. No store write during drag.
+3. Slider range: `[0, selectedBottleCapacityOz]`. The maximum is always the current bottle's capacity.
+4. The CTA computes `consumedOz = committedBottleLevelOz - draftBottleLevelOz` and calls `logWater(consumedOz)` followed by `setBottleLevel(draftBottleLevelOz)`.
+5. The CTA is disabled when `consumedOz <= 0` (i.e., when the draft is at or above the committed level).
+6. Upward draft movement before confirm is allowed as a preview but cannot be committed through the CTA.
+7. `draftBottleLevelOz` resets to `committedBottleLevelOz` whenever committed level or bottle capacity changes (via `useEffect`).
+8. There is no upper cap on consumed ounces in the store — the goal cap applies to the daily target, not individual entries.
 
 ---
 
@@ -200,11 +197,13 @@ if daysSinceLastOpen > 1:
 ```
 
 Additional rules:
-1. Daily values reset (`todayIntakeOz`, `draftLogOz` → `0`); persistent profile data does not.
-2. `lastOpenedDate` is always updated to today after the check runs.
-3. On the very first app open (no `lastOpenedDate` stored), treat as a fresh state — no streak evaluation needed.
-4. Date strings must use local calendar time, not UTC, to avoid midnight edge-case bugs.
-5. **Goal recomputation on new-day open is the canonical daily refresh.** When `runNewDayCheck()` fires on a new day, it always calls `calculateGoal()` with the current stored profile and climate. This is not a behavior change — it simply ensures the current day's goal reflects the user's stored climate preference. It does not override any streak history or intake from the day just ended.
+1. `todayIntakeOz` resets to `0` on new day; persistent profile data does not.
+2. `lastAction` is cleared to `null` on new day.
+3. `bottleLevelOz` is **NOT** reset on new day — the digital bottle persists across midnight.
+4. `lastOpenedDate` is always updated to today after the check runs.
+5. On the very first app open (no `lastOpenedDate` stored), treat as a fresh state — no streak evaluation needed.
+6. Date strings must use local calendar time, not UTC, to avoid midnight edge-case bugs.
+7. **Goal recomputation on new-day open is the canonical daily refresh.** When `runNewDayCheck()` fires on a new day, it always calls `calculateGoal()` with the current stored profile and climate. It does not override any streak history or intake from the day just ended.
 
 ---
 
@@ -212,8 +211,10 @@ Additional rules:
 1. Onboarding/profile data persists across app restarts.
 2. Hydration data for the current day persists across app restarts.
 3. Streak data persists across app restarts.
-4. Temporary UI state does not need to persist unless explicitly useful.
-5. The persisted store should include a schemaVersion field for future migration safety.
+4. `bottleLevelOz` persists across app restarts and across midnight.
+5. Temporary UI state does not need to persist unless explicitly useful.
+6. `lastAction` is NOT persisted — the undo token is session-only and cleared on cold start.
+7. The persisted store should include a schemaVersion field for future migration safety.
 
 ---
 
@@ -224,27 +225,23 @@ Additional rules:
 4. The app should prefer simple safeguards over complex recovery logic.
 5. The app should fail predictably and visibly during development rather than silently corrupting state.
 
-### draftLogOz validity rules
-6. `draftLogOz = 0` is valid only as the initial/cleared sentinel state. It is set to `0` on first load and on new-day reset. It must not be set to `0` through normal user interaction.
-7. `setDraftLog(amountOz)` must accept `0` only when called explicitly for initialization or clear (e.g. during new-day reset). In all other call sites it should only be called with a positive value.
-8. If `setDraftLog` is called with a negative number, `NaN`, or a non-finite value from a user interaction path, the call must be rejected and `draftLogOz` must remain unchanged.
+### setBottleLevel validity rules
+6. `setBottleLevel(oz)` accepts `0` and positive finite values. It rejects negative, NaN, or non-finite values.
+7. Callers must pass an already-normalized value; the action does not clamp to capacity.
 
 ### logWater validity rules
-9. `logWater(amountOz)` must reject any call where `amountOz` is `0`, negative, `NaN`, or non-finite. On rejection, `todayIntakeOz` must not change, `draftLogOz` must not change, and no streak evaluation must run.
-10. Quick-log buttons use hardcoded positive values and will never produce an invalid call under normal conditions, but the action-level guard must still exist.
+8. `logWater(amountOz)` must reject any call where `amountOz` is `0`, negative, `NaN`, or non-finite. On rejection, `todayIntakeOz` must not change and no streak evaluation must run.
+9. The CTA computes `consumedOz` before calling `logWater`. The `consumedOz <= 0` guard in the UI prevents the invalid path from reaching the store in normal use, but the store-level guard must still exist.
 
 ---
 
-## 13. Undo-last-log behavior
+## 13. Undo-last-action behavior
 
-1. **One-level only.** Only the most recent successful log is undoable. There is no history model and no multi-step undo.
-2. **Undo token.** On every successful `logWater` call, the store sets `lastLogAmountOz` to that call's amount. Each new log overwrites the previous value. Calling `undoLastLog` when `lastLogAmountOz` is `null` is a no-op.
-3. **Session-only / non-persisted.** `lastLogAmountOz` and `previousLastGoalHitDate` are excluded from persistence via `partialize`. They are `null` on cold start and after any new-day reset. A user who closes and reopens the app loses the undo token; this is expected and intentional.
-4. **Token is cleared by:** using undo, making a new successful log (overwrites), app restart, new-day reset, and `resetHydration`.
-5. **Streak and goal-hit rollback.** If `undoLastLog` causes `todayIntakeOz` to drop from at-or-above the daily goal to below it, and the goal was hit today, then:
-   - `streakCount` is decremented by 1, floored at 0.
-   - `lastGoalHitDate` is restored to `previousLastGoalHitDate` — the value captured before today's goal-hit log fired.
-   - Logs made after the goal was already hit today do not overwrite `previousLastGoalHitDate`. This ensures the saved pre-hit value remains valid regardless of how many additional logs were made above goal.
-6. **No rollback when still above goal.** If the undone log leaves intake still at or above goal, streak and `lastGoalHitDate` are not changed.
-7. **`draftLogOz` after undo.** `undoLastLog` sets `draftLogOz` to `0`. The bottle clears to empty. The user must re-select an amount to log again.
+1. **One-level only.** Only the most recent committed action (drink or refill) is undoable. There is no history model and no multi-step undo.
+2. **Action token.** `lastAction` is a discriminated union (`'drink'` | `'refill'`) that captures the exact pre-action snapshot before any mutation. Each new committed action overwrites the previous token. Calling `undoLastAction` when `lastAction` is `null` is a no-op.
+3. **Session-only / non-persisted.** `lastAction` is excluded from persistence via `partialize`. It is `null` on cold start and after any new-day reset. A user who closes and reopens the app loses the undo token; this is expected and intentional.
+4. **Token is cleared by:** using undo, making a new drink or refill (overwrites), app restart, new-day reset, and `resetHydration`.
+5. **Drink undo.** Restores the exact pre-action snapshot: `todayIntakeOz`, `streakCount`, `lastGoalHitDate`, and `bottleLevelOz`. No rollback logic is derived after the fact — the full prior state was captured before the mutation.
+6. **Refill undo.** Restores `bottleLevelOz` to the value before the refill. Does not touch `todayIntakeOz`, `streakCount`, or `lastGoalHitDate` — refill never changed them.
+7. **Bottle level after undo.** `undoLastAction` restores `bottleLevelOz` from the snapshot. HomeScreen's `useEffect` then syncs `draftBottleLevelOz` to the restored committed level.
 8. **Streak display.** When `streakCount === 0`, the streak display is hidden entirely. It appears once the user earns their first successful day.

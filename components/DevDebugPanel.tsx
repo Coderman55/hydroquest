@@ -31,9 +31,9 @@ export function DevDebugPanel() {
   } = useProfileStore();
 
   const {
-    todayIntakeOz, draftLogOz, dailyGoalOz, recommendedGoalOz,
-    streakCount, lastOpenedDate, lastGoalHitDate,
-    logWater, setDraftLog, runNewDayCheck,
+    todayIntakeOz, bottleLevelOz, dailyGoalOz, recommendedGoalOz,
+    streakCount, lastOpenedDate, lastGoalHitDate, lastAction,
+    logWater, runNewDayCheck,
     _setLastOpenedDateToYesterday, resetHydration,
   } = useHydrationStore();
 
@@ -42,10 +42,9 @@ export function DevDebugPanel() {
   // Derived values (never stored, always computed).
   const goalPercent = dailyGoalOz > 0 ? todayIntakeOz / dailyGoalOz : 0;
   const remainingOz = Math.max(0, dailyGoalOz - todayIntakeOz);
-  const bottleFillPercent =
-    selectedBottleId != null
-      ? Math.min(draftLogOz / BOTTLE_CAPACITIES[selectedBottleId], 1)
-      : 0;
+  const bottleCapacityOz = selectedBottleId != null ? BOTTLE_CAPACITIES[selectedBottleId] : 0;
+  const committedLevel = Math.min(bottleLevelOz ?? bottleCapacityOz, bottleCapacityOz);
+  const bottleFillPercent = bottleCapacityOz > 0 ? Math.min(committedLevel / bottleCapacityOz, 1) : 0;
 
   function handleCustomLog() {
     const parsed = parseFloat(customText);
@@ -89,7 +88,8 @@ export function DevDebugPanel() {
 
       {/* ── Ephemeral + derived ── */}
       <Section label="EPHEMERAL / DERIVED">
-        <KV k="draftLogOz" v={draftLogOz} />
+        <KV k="bottleLevelOz" v={bottleLevelOz ?? 'null (full)'} />
+        <KV k="lastAction" v={lastAction ? lastAction.type : 'null'} />
         <KV k="goalPercent" v={`${(goalPercent * 100).toFixed(1)}%`} />
         <KV k="remainingOz" v={remainingOz} />
         <KV k="bottleFillPercent" v={`${(bottleFillPercent * 100).toFixed(1)}%`} />
@@ -106,23 +106,12 @@ export function DevDebugPanel() {
         <KV k="bottleColor" v={bottleColor ?? 'null'} />
       </Section>
 
-      {/* ── Quick-log ── */}
-      <Section label="QUICK LOG (logWater + sets draftLogOz)">
+      {/* ── Quick-log (debug only — bypasses bottle level) ── */}
+      <Section label="QUICK LOG (logWater direct — debug only)">
         <ButtonRow>
           <Button title="4 oz" onPress={() => logWater(4)} />
           <Button title="16 oz" onPress={() => logWater(16)} />
           <Button title="32 oz" onPress={() => logWater(32)} />
-        </ButtonRow>
-      </Section>
-
-      {/* ── Set draft (no log) ── */}
-      <Section label="SET DRAFT ONLY (no log)">
-        <ButtonRow>
-          <Button title="0 (clear)" onPress={() => setDraftLog(0)} />
-          <Button title="8" onPress={() => setDraftLog(8)} />
-          <Button title="16" onPress={() => setDraftLog(16)} />
-          <Button title="24" onPress={() => setDraftLog(24)} />
-          <Button title="32" onPress={() => setDraftLog(32)} />
         </ButtonRow>
       </Section>
 

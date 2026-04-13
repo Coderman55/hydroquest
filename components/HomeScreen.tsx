@@ -1,15 +1,16 @@
-// HydroQuest — Day 4 home screen.
-// First real logged-in screen. Replaces the inline MainPanel debug harness.
-// Business logic is read from stores only — no logic lives here.
+// HydroQuest — Day 9 home screen.
+// Reverse-fill mechanic: the bottle represents how much water is LEFT.
+// The slider sets a draft remaining level; the CTA logs consumed = committed - draft.
+// Refill resets the digital bottle to full without adding to intake.
 //
 // Layout hierarchy (top → bottom):
 //   SafeAreaView
 //   ├── Top row          — streak (top-right, tertiary)
 //   ├── Progress block   — intake display, %, remaining, pill bar  [centered]
-//   ├── Bottle zone      — placeholder bottle  [flex: 1]
-//   └── Interaction zone — quick-log pills, slider, CTA
+//   ├── Bottle zone      — bottle visual  [flex: 1]
+//   └── Interaction zone — slider (LEFT IN BOTTLE), CTA, refill, undo
 
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Pressable,
   SafeAreaView,
@@ -21,7 +22,6 @@ import Slider from '@react-native-community/slider';
 
 import {
   BOTTLE_CAPACITIES,
-  QUICK_LOG_AMOUNTS,
   type BottleId,
 } from '../constants';
 import {
@@ -48,14 +48,15 @@ const BOTTLE_BODY_H = 200;
 
 export function HomeScreen() {
   // ── Store reads ────────────────────────────────────────────────────────────
-  const todayIntakeOz = useHydrationStore((s) => s.todayIntakeOz);
-  const draftLogOz    = useHydrationStore((s) => s.draftLogOz);
-  const dailyGoalOz   = useHydrationStore((s) => s.dailyGoalOz);
-  const streakCount   = useHydrationStore((s) => s.streakCount);
+  const todayIntakeOz   = useHydrationStore((s) => s.todayIntakeOz);
+  const bottleLevelOz   = useHydrationStore((s) => s.bottleLevelOz);
+  const dailyGoalOz     = useHydrationStore((s) => s.dailyGoalOz);
+  const streakCount     = useHydrationStore((s) => s.streakCount);
+  const lastAction      = useHydrationStore((s) => s.lastAction);
   const logWater        = useHydrationStore((s) => s.logWater);
-  const setDraftLog     = useHydrationStore((s) => s.setDraftLog);
-  const undoLastLog     = useHydrationStore((s) => s.undoLastLog);
-  const lastLogAmountOz = useHydrationStore((s) => s.lastLogAmountOz);
+  const setBottleLevel  = useHydrationStore((s) => s.setBottleLevel);
+  const refillBottle    = useHydrationStore((s) => s.refillBottle);
+  const undoLastAction  = useHydrationStore((s) => s.undoLastAction);
 
   const selectedBottleId = useProfileStore((s) => s.selectedBottleId);
   const bottleColor      = useProfileStore((s) => s.bottleColor);
@@ -68,8 +69,6 @@ export function HomeScreen() {
   const percentInt   = Math.min(Math.round(goalPercent * 100), 100);
   const remainingOz  = Math.max(0, dailyGoalOz - todayIntakeOz);
 
-  // Single threshold color used for both the intake amount text and the
-  // progress bar fill — matches the "spirit of gradient" direction.
   const progressColor =
     goalPercent >= 1   ? palette.accent  :
     goalPercent >= 0.5 ? palette.ink     :
@@ -77,29 +76,66 @@ export function HomeScreen() {
 
   // ── Derived: bottle ────────────────────────────────────────────────────────
   // Treat null as sport-curve so the bottle always renders post-onboarding.
-  const bottleType: BottleId   = selectedBottleId ?? 'sport-curve';
-  const bottleCapacityOz       = BOTTLE_CAPACITIES[bottleType];
-  const bottleFillPercent      = Math.min(draftLogOz / bottleCapacityOz, 1);
-  const bottleColorHex         = bottleColor ? BOTTLE_COLOR_HEX[bottleColor] : palette.support;
-  const fillH                  = BOTTLE_BODY_H * bottleFillPercent;
+  const bottleType: BottleId = selectedBottleId ?? 'sport-curve';
+  const bottleCapacityOz     = BOTTLE_CAPACITIES[bottleType];
+  const bottleColorHex       = bottleColor ? BOTTLE_COLOR_HEX[bottleColor] : palette.support;
+
+  // Clamp committed level to current capacity — guards against persisted levels
+  // that exceed capacity if the user changes bottle archetype after persistence.
+  // null = treat as full (first launch / migrated installs).
+  const committedBottleLevelOz = Math.min(
+    bottleLevelOz ?? bottleCapacityOz,
+    bottleCapacityOz,
+  );
 
   // Bottle shape varies slightly by archetype.
   const isSportCurve = bottleType === 'sport-curve';
   const bodyWidth    = isSportCurve ? 76 : 96;
   const bodyRadius   = isSportCurve ? 30 : 14;
-  // Cap: Sport Curve has a narrow rounded neck; Block Tumbler has a wide flat lid.
   const capWidth     = isSportCurve ? 26 : 88;
   const capHeight    = isSportCurve ? 26 : 16;
   const capRadius    = isSportCurve ? 4  : 6;
 
   // ── Flex values for the pill progress bar ──────────────────────────────────
-  // Using flex rather than percentage strings avoids TypeScript DimensionValue issues.
   const barFill      = Math.min(goalPercent, 1);
   const barRemainder = Math.max(1 - goalPercent, 0);
 
-  // ── CTA ────────────────────────────────────────────────────────────────────
-  const ctaDisabled  = draftLogOz === 0;
-  const ctaLabel     = ctaDisabled ? 'Choose an amount' : `Log ${draftLogOz} oz`;
+  // ── Settings sheet visibility ──────────────────────────────────────────────
+  const [showSettings, setShowSettings] = useState(false);
+
+  // ── Slider haptic bucket guard ─────────────────────────────────────────────
+  // Seeded on drag start so a touch at a bucket boundary doesn't fire a haptic.
+  const sliderBucketRef = useRef<number>(-1);
+
+  // ── Draft bottle level (local UI state) ───────────────────────────────────
+  // Represents the bottle level the user is dragging toward before confirming.
+  // Not stored globally — it's transient UI state that only commits on CTA press.
+  const [draftBottleLevelOz, setDraftBottleLevelOz] = useState<number>(committedBottleLevelOz);
+
+  // Sync draft to committed level whenever committed level or capacity changes.
+  // This keeps draft in a known-good state after: successful log, undo, refill,
+  // restart/rehydration, or bottle archetype change in settings.
+  useEffect(() => {
+    setDraftBottleLevelOz(committedBottleLevelOz);
+  }, [committedBottleLevelOz]);
+
+  // ── Bottle fill visual ────────────────────────────────────────────────────
+  // Bottle previews the draft remaining level so the user sees the effect
+  // of their slider position before confirming.
+  const bottleFillPercent = Math.min(draftBottleLevelOz / bottleCapacityOz, 1);
+  const fillH             = BOTTLE_BODY_H * bottleFillPercent;
+
+  // ── CTA state ─────────────────────────────────────────────────────────────
+  // consumedOz is the amount that would be logged on CTA press.
+  // Positive = user dragged down (drink). Zero or negative = no drink to log.
+  const consumedOz   = committedBottleLevelOz - draftBottleLevelOz;
+  const ctaDisabled  = consumedOz <= 0;
+  const ctaLabel     = ctaDisabled ? 'Lower the bottle level to log' : `Log ${consumedOz} oz`;
+
+  // ── Refill button state ───────────────────────────────────────────────────
+  // Disabled when the bottle is already full. committedBottleLevelOz resolves
+  // null → full, so this also handles the first-launch / migrated-install case.
+  const refillDisabled = committedBottleLevelOz >= bottleCapacityOz;
 
   // ── Coach message ──────────────────────────────────────────────────────────
   // Deterministic. First matching rule wins. No randomness, no async, no store writes.
@@ -111,7 +147,6 @@ export function HomeScreen() {
     hour < 18 ? 'afternoon' :
                 'evening';
 
-  // Expected completion ratio by time of day — used to gauge pace.
   const expectedProgress =
     timeBucket === 'morning'   ? 0.15 :
     timeBucket === 'midday'    ? 0.35 :
@@ -123,7 +158,6 @@ export function HomeScreen() {
     goalPercent <  expectedProgress - 0.10 ? 'behind' :
                                              'onTrack';
 
-  // Close-range helpers — keyed to how much one bottle holds.
   const isClose           = remainingOz <= bottleCapacityOz;
   const isVeryClose       = remainingOz <= bottleCapacityOz * 0.5;
   const isNearBottleRange = remainingOz <= bottleCapacityOz * 1.5;
@@ -131,14 +165,12 @@ export function HomeScreen() {
   let coachMessage: string;
 
   if (goalHit) {
-    // 1. goal_hit
     coachMessage =
       streakCount >= 2
         ? 'All set for today. Streak secured.'
         : 'Goal complete. Great work today!';
 
   } else if (isClose) {
-    // 2. goal_close
     if (isVeryClose) {
       coachMessage = 'Home stretch. Just a few sips left to hit your goal.';
     } else if (remainingOz === bottleCapacityOz) {
@@ -148,11 +180,9 @@ export function HomeScreen() {
     }
 
   } else if (todayIntakeOz === 0 && timeBucket === 'morning') {
-    // 3. morning_start
     coachMessage = "Good morning! Let's get that first sip.";
 
   } else if (timeBucket === 'afternoon' && paceBucket === 'behind') {
-    // 4. afternoon_slump
     if (climate === 'hot' && activityLevel !== 'low') {
       coachMessage = "Warm afternoon out there. Let's close the gap.";
     } else if (climate === 'hot') {
@@ -164,21 +194,18 @@ export function HomeScreen() {
     }
 
   } else if (timeBucket === 'evening' && paceBucket === 'behind') {
-    // 5. evening_wind_down
     coachMessage =
       isVeryClose
         ? 'Almost done for the day. Just a glass or two left.'
         : "Winding down? Let's top off that goal before bed.";
 
   } else if (paceBucket === 'onTrack' || paceBucket === 'ahead') {
-    // 6. steady_pace
     coachMessage =
       paceBucket === 'ahead'
         ? 'Great momentum today. Sip at your leisure.'
         : 'Pacing perfectly. Keep it up.';
 
   } else {
-    // 7. default_nudge
     if (isNearBottleRange && remainingOz > bottleCapacityOz) {
       coachMessage = "About one refill left. You're in a good spot.";
     } else if (isNearBottleRange) {
@@ -187,14 +214,6 @@ export function HomeScreen() {
       coachMessage = 'Small, steady sips make the rest easy.';
     }
   }
-
-  // ── Settings sheet visibility ──────────────────────────────────────────────
-  const [showSettings, setShowSettings] = useState(false);
-
-  // ── Slider haptic bucket guard ─────────────────────────────────────────────
-  // Seeded on drag start so a touch at a bucket boundary doesn't fire a haptic.
-  // Programmatic value changes (undo, reset) never touch this ref.
-  const sliderBucketRef = useRef<number>(-1);
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -218,7 +237,6 @@ export function HomeScreen() {
       {/* ── B. Progress block ───────────────────────────────────────────────── */}
       <View style={styles.progressBlock}>
 
-        {/* Intake amount — large serif, threshold color on consumed part */}
         <Text style={styles.intakeLine}>
           <Text style={[styles.intakeLarge, { color: progressColor }]}>
             {todayIntakeOz} oz
@@ -226,15 +244,12 @@ export function HomeScreen() {
           <Text style={styles.intakeGoalText}> / {dailyGoalOz} oz</Text>
         </Text>
 
-        {/* Percentage line */}
         <Text style={styles.percentText}>{percentInt}% of your daily goal</Text>
 
-        {/* Remaining / goal-reached line */}
         <Text style={styles.remainingText}>
           {goalHit ? 'Goal reached' : `${remainingOz} oz left`}
         </Text>
 
-        {/* Pill progress bar — flex-based to avoid percentage string cast */}
         <View style={styles.progressTrack}>
           <View style={[styles.progressFill, { flex: barFill, backgroundColor: progressColor }]} />
           <View style={{ flex: barRemainder }} />
@@ -248,10 +263,8 @@ export function HomeScreen() {
       {/* ── C. Bottle zone ──────────────────────────────────────────────────── */}
       <View style={styles.bottleZone}>
 
-        {/* Placeholder bottle */}
         <View style={styles.bottleWrapper}>
 
-          {/* Cap / lid sits above the body */}
           <View
             style={[
               styles.bottleCap,
@@ -264,7 +277,6 @@ export function HomeScreen() {
             ]}
           />
 
-          {/* Body — overflow:hidden clips the fill to the body's border radius */}
           <View
             style={[
               styles.bottleBody,
@@ -275,7 +287,6 @@ export function HomeScreen() {
               },
             ]}
           >
-            {/* Fill rises from the bottom; only rendered when non-zero */}
             {fillH > 0 && (
               <View
                 style={[
@@ -302,41 +313,19 @@ export function HomeScreen() {
       {/* ── D. Interaction zone ─────────────────────────────────────────────── */}
       <View style={styles.interactionZone}>
 
-        {/* 1. Quick-log pills */}
+        {/* 1. Slider — sets draft remaining bottle level */}
         <View style={styles.labeledGroup}>
-          <Text style={styles.eyebrowLabel}>QUICK ADD</Text>
-          <View style={styles.quickLogRow}>
-            {QUICK_LOG_AMOUNTS.map((oz) => (
-              <Pressable
-                key={oz}
-                style={({ pressed }) => [
-                  styles.quickLogPill,
-                  pressed && styles.quickLogPillPressed,
-                ]}
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  logWater(oz);
-                }}
-              >
-                <Text style={styles.quickLogText}>{oz} oz</Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-
-        {/* 2. Custom amount slider — range 0–40 oz, step 1 */}
-        <View style={styles.labeledGroup}>
-          <Text style={[styles.eyebrowLabel, { marginBottom: 7 }]}>CUSTOM</Text>
+          <Text style={[styles.eyebrowLabel, { marginBottom: 7 }]}>LEFT IN BOTTLE</Text>
           <View style={styles.sliderRow}>
             <Slider
               style={styles.slider}
-              value={draftLogOz}
+              value={draftBottleLevelOz}
               onSlidingStart={(val) => {
                 sliderBucketRef.current = Math.floor(Math.round(val) / 4);
               }}
               onValueChange={(val) => {
                 const rounded = Math.round(val);
-                setDraftLog(rounded);
+                setDraftBottleLevelOz(rounded);
                 const bucket = Math.floor(rounded / 4);
                 if (bucket !== sliderBucketRef.current) {
                   sliderBucketRef.current = bucket;
@@ -344,7 +333,7 @@ export function HomeScreen() {
                 }
               }}
               minimumValue={0}
-              maximumValue={40}
+              maximumValue={bottleCapacityOz}
               step={1}
               minimumTrackTintColor={palette.accent}
               maximumTrackTintColor={palette.bgEdge}
@@ -353,7 +342,7 @@ export function HomeScreen() {
           </View>
         </View>
 
-        {/* 3. Primary CTA */}
+        {/* 2. Primary CTA — logs consumed = committed - draft */}
         <Pressable
           style={({ pressed }) => [
             styles.ctaButton,
@@ -364,8 +353,11 @@ export function HomeScreen() {
               : null,
           ]}
           onPress={ctaDisabled ? undefined : () => {
+            const consumed = committedBottleLevelOz - draftBottleLevelOz;
+            if (consumed <= 0) return;
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            logWater(draftLogOz);
+            logWater(consumed);
+            setBottleLevel(draftBottleLevelOz);
           }}
           disabled={ctaDisabled}
         >
@@ -374,18 +366,41 @@ export function HomeScreen() {
           </Text>
         </Pressable>
 
-        {/* 4. Undo affordance — bare text link, visible only when a log is undoable */}
-        {lastLogAmountOz !== null && (
+        {/* 3. Refill button — resets digital bottle to full, no intake change */}
+        <Pressable
+          style={({ pressed }) => [
+            styles.refillButton,
+            refillDisabled
+              ? styles.refillButtonDisabled
+              : pressed
+              ? styles.refillButtonPressed
+              : null,
+          ]}
+          onPress={refillDisabled ? undefined : () => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            refillBottle(bottleCapacityOz);
+          }}
+          disabled={refillDisabled}
+        >
+          <Text style={[styles.refillText, refillDisabled && styles.refillTextDisabled]}>
+            Refill bottle
+          </Text>
+        </Pressable>
+
+        {/* 4. Undo affordance — bare text link, visible only when an action is undoable */}
+        {lastAction !== null && (
           <Pressable
             style={styles.undoLink}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              undoLastLog();
+              undoLastAction();
             }}
             hitSlop={8}
           >
             <Text style={styles.undoLinkText}>
-              Undo last log ({lastLogAmountOz} oz)
+              {lastAction.type === 'drink'
+                ? `Undo last drink (${lastAction.consumedOz} oz)`
+                : 'Undo refill'}
             </Text>
           </Pressable>
         )}
@@ -466,9 +481,6 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     textAlign: 'center',
   },
-  // Pill progress bar — flexDirection row so fill/remainder use flex proportions.
-  // alignSelf: 'stretch' ensures the bar spans the full padded content width
-  // even though the parent has alignItems: 'center'.
   progressTrack: {
     height: 6,
     borderRadius: radius.pill,
@@ -479,7 +491,6 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: 6,
-    // flex + backgroundColor injected inline
   },
 
   // ── Bottle zone ───────────────────────────────────────────────────────────────
@@ -493,11 +504,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   bottleCap: {
-    // width, height, borderRadius, backgroundColor injected inline
     opacity: 0.9,
   },
   bottleBody: {
-    // width, height, borderRadius injected inline
     backgroundColor: palette.white,
     borderWidth: 1.5,
     borderColor: palette.bgEdge,
@@ -509,7 +518,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    // height + backgroundColor injected inline
     opacity: 0.75,
   },
 
@@ -518,30 +526,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.lg,
     gap: spacing.md,
-  },
-
-  // ── Quick-log pills ───────────────────────────────────────────────────────────
-  quickLogRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  quickLogPill: {
-    flex: 1,
-    paddingVertical: spacing.sm + 2,
-    borderRadius: radius.pill,
-    backgroundColor: palette.bgSoft,
-    borderWidth: 1.5,
-    borderColor: palette.bgEdge,
-    alignItems: 'center',
-  },
-  quickLogPillPressed: {
-    backgroundColor: palette.bgEdge,
-    borderColor: palette.support,
-  },
-  quickLogText: {
-    fontSize: fontSize.body,
-    fontWeight: '600',
-    color: palette.ink,
   },
 
   // ── Slider ────────────────────────────────────────────────────────────────────
@@ -575,9 +559,31 @@ const styles = StyleSheet.create({
     color: palette.inkMuted,
   },
 
+  // ── Refill button — secondary, ghost-style, clearly below CTA in hierarchy ────
+  refillButton: {
+    borderRadius: radius.pill,
+    paddingVertical: spacing.sm + 2,
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: palette.bgEdge,
+    backgroundColor: palette.bgSoft,
+  },
+  refillButtonDisabled: {
+    opacity: 0.4,
+  },
+  refillButtonPressed: {
+    backgroundColor: palette.bgEdge,
+  },
+  refillText: {
+    color: palette.inkSoft,
+    fontSize: fontSize.body,
+    fontWeight: '500',
+  },
+  refillTextDisabled: {
+    color: palette.inkMuted,
+  },
+
   // ── Undo link ─────────────────────────────────────────────────────────────────
-  // Bare centered text — no background, no border, no pill shape.
-  // Large paddingVertical keeps the tap target comfortable despite the quiet visual.
   undoLink: {
     alignItems: 'center',
     paddingVertical: spacing.md,
@@ -590,8 +596,6 @@ const styles = StyleSheet.create({
   },
 
   // ── Labeled interaction groups ─────────────────────────────────────────────
-  // Small gap inside the group keeps label visually attached to its control.
-  // Outer interactionZone gap (spacing.md) still governs rhythm between groups.
   labeledGroup: {
     gap: spacing.xs,
   },
