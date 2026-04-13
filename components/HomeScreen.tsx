@@ -1,14 +1,21 @@
 // HydroQuest — Day 9 home screen.
 // Reverse-fill mechanic: the bottle represents how much water is LEFT.
-// The slider sets a draft remaining level; the CTA logs consumed = committed - draft.
+// The vertical ruler sidecar sets a draft remaining level; the CTA logs
+// consumed = committed - draft.
 // Refill resets the digital bottle to full without adding to intake.
 //
 // Layout hierarchy (top → bottom):
 //   SafeAreaView
-//   ├── Top row          — streak (top-right, tertiary)
-//   ├── Progress block   — intake display, %, remaining, pill bar  [centered]
-//   ├── Bottle zone      — bottle visual  [flex: 1]
-//   └── Interaction zone — slider (LEFT IN BOTTLE), CTA, refill, undo
+//   ├── Top row          — settings (left) + streak (right)
+//   ├── Progress block   — intake display, %, remaining, pill bar  [no bg]
+//   ├── Coach card       — contextual nudge, separated by thin divider
+//   ├── Bottle workspace — bottle visual + vertical ruler sidecar  [flex: 1]
+//   └── Interaction zone — CTA, refill, undo
+//
+// Ruler model:
+//   • Visual track spans 0 → bottleCapacityOz (full height always)
+//   • Thumb position = draftBottleLevelOz / bottleCapacityOz  → mirrors bottle fill
+//   • Interaction clamped in onValueChange: draft cannot exceed committedBottleLevelOz
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -38,11 +45,14 @@ import { ProfileEditSheet } from './ProfileEditSheet';
 import { CoachCard } from './CoachCard';
 import * as Haptics from 'expo-haptics';
 
-// ─── Layout constant ──────────────────────────────────────────────────────────
+// ─── Layout constants ─────────────────────────────────────────────────────────
 
-// Fixed pixel height of the bottle body. The fill block grows from the bottom
-// up to this height. Using a fixed value avoids onLayout complexity.
+// Fixed pixel height of the bottle body. Fill block grows from the bottom up.
 const BOTTLE_BODY_H = 200;
+
+// Width of the vertical ruler container. The Slider element is wider (= BOTTLE_BODY_H)
+// and rotated -90° so it renders vertically within this container.
+const RULER_W = 44;
 
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 
@@ -130,12 +140,24 @@ export function HomeScreen() {
   // Positive = user dragged down (drink). Zero or negative = no drink to log.
   const consumedOz   = committedBottleLevelOz - draftBottleLevelOz;
   const ctaDisabled  = consumedOz <= 0;
-  const ctaLabel     = ctaDisabled ? 'Lower the bottle level to log' : `Log ${consumedOz} oz`;
+  const ctaLabel     = ctaDisabled ? 'Lower to log a drink' : `Log ${consumedOz} oz`;
 
   // ── Refill button state ───────────────────────────────────────────────────
   // Disabled when the bottle is already full. committedBottleLevelOz resolves
   // null → full, so this also handles the first-launch / migrated-install case.
   const refillDisabled = committedBottleLevelOz >= bottleCapacityOz;
+
+  // ── Ruler: visual scale and interaction clamp ─────────────────────────────
+  // The slider's maximumValue is always bottleCapacityOz so the thumb position
+  // maps identically to draftBottleLevelOz / bottleCapacityOz — the same ratio
+  // the bottle fill uses. Upward clamping is enforced in onValueChange, not by
+  // collapsing the slider range (which caused the prior visual mismatch).
+  const sliderDisabled = committedBottleLevelOz <= 0;
+
+  // ── Ruler: quarter-mark y positions ──────────────────────────────────────
+  // Marks at 1/4, 1/2, 3/4 of track height from top.
+  // top = full capacity, bottom = 0 (mirrors the bottle fill direction).
+  const markTopAt = (fraction: number) => BOTTLE_BODY_H * fraction - 2;
 
   // ── Coach message ──────────────────────────────────────────────────────────
   // Deterministic. First matching rule wins. No randomness, no async, no store writes.
@@ -234,7 +256,7 @@ export function HomeScreen() {
         )}
       </View>
 
-      {/* ── B. Progress block ───────────────────────────────────────────────── */}
+      {/* ── B. Progress block — flat, no card background ───────────────────── */}
       <View style={styles.progressBlock}>
 
         <Text style={styles.intakeLine}>
@@ -247,7 +269,7 @@ export function HomeScreen() {
         <Text style={styles.percentText}>{percentInt}% of your daily goal</Text>
 
         <Text style={styles.remainingText}>
-          {goalHit ? 'Goal reached' : `${remainingOz} oz left`}
+          {goalHit ? 'Goal reached' : `${remainingOz} oz to go`}
         </Text>
 
         <View style={styles.progressTrack}>
@@ -257,14 +279,17 @@ export function HomeScreen() {
 
       </View>
 
+      {/* Thin divider — separates today stats from coach nudge */}
+      <View style={styles.sectionDivider} />
+
       {/* ── Coach card ──────────────────────────────────────────────────────── */}
       <CoachCard message={coachMessage} />
 
-      {/* ── C. Bottle zone ──────────────────────────────────────────────────── */}
-      <View style={styles.bottleZone}>
+      {/* ── C. Bottle workspace — bottle hero + vertical ruler sidecar ─────── */}
+      <View style={styles.bottleWorkspace}>
 
-        <View style={styles.bottleWrapper}>
-
+        {/* Bottle column */}
+        <View style={styles.bottleColumn}>
           <View
             style={[
               styles.bottleCap,
@@ -302,6 +327,67 @@ export function HomeScreen() {
 
         </View>
 
+        {/* Gap between bottle and ruler */}
+        <View style={styles.rulerGap} />
+
+        {/* Vertical ruler sidecar — aligned with bottle body (offset by cap) */}
+        <View style={[styles.rulerSidecar, { marginTop: capHeight + 2 }]}>
+
+          {/* Track area: rotated slider + quarter marks */}
+          <View style={styles.rulerArea}>
+
+            {/* Slider container: RULER_W × BOTTLE_BODY_H.
+                The Slider element is BOTTLE_BODY_H × RULER_W in layout space,
+                rotated -90° so it renders as a vertical track:
+                  top    = maximumValue (bottleCapacityOz — always full height)
+                  bottom = minimumValue (0)
+                Thumb position = draftBottleLevelOz / bottleCapacityOz, matching
+                the bottle fill exactly.
+                Upward clamp: onValueChange caps draft at committedBottleLevelOz,
+                so the user cannot drag above their current committed level. */}
+            <View style={styles.rulerSliderContainer}>
+              <Slider
+                style={styles.verticalSlider}
+                value={draftBottleLevelOz}
+                onSlidingStart={(val) => {
+                  sliderBucketRef.current = Math.floor(Math.round(val) / 4);
+                }}
+                onValueChange={(val) => {
+                  // Clamp upward at committed level — this is the core interaction bound.
+                  const clamped = Math.min(Math.round(val), committedBottleLevelOz);
+                  setDraftBottleLevelOz(clamped);
+                  const bucket = Math.floor(clamped / 4);
+                  if (bucket !== sliderBucketRef.current) {
+                    sliderBucketRef.current = bucket;
+                    Haptics.selectionAsync();
+                  }
+                }}
+                minimumValue={0}
+                maximumValue={bottleCapacityOz}
+                step={1}
+                disabled={sliderDisabled}
+                minimumTrackTintColor={bottleColorHex}
+                maximumTrackTintColor={palette.bgEdge}
+                thumbTintColor={palette.accent}
+              />
+            </View>
+
+            {/* Quarter marks — sparse dots at 3/4, 1/2, 1/4 of track height */}
+            <View style={styles.rulerMarksColumn}>
+              <View style={[styles.rulerMark, { top: markTopAt(0.25) }]} />
+              <View style={[styles.rulerMark, { top: markTopAt(0.50) }]} />
+              <View style={[styles.rulerMark, { top: markTopAt(0.75) }]} />
+            </View>
+
+          </View>
+
+          {/* Live draft label — anchored below the track, clearly part of the ruler */}
+          <Text style={styles.ozLeftLabel}>
+            {draftBottleLevelOz} oz left
+          </Text>
+
+        </View>
+
       </View>
 
       {/* ── E. Profile edit sheet ───────────────────────────────────────────── */}
@@ -313,36 +399,7 @@ export function HomeScreen() {
       {/* ── D. Interaction zone ─────────────────────────────────────────────── */}
       <View style={styles.interactionZone}>
 
-        {/* 1. Slider — sets draft remaining bottle level */}
-        <View style={styles.labeledGroup}>
-          <Text style={[styles.eyebrowLabel, { marginBottom: 7 }]}>LEFT IN BOTTLE</Text>
-          <View style={styles.sliderRow}>
-            <Slider
-              style={styles.slider}
-              value={draftBottleLevelOz}
-              onSlidingStart={(val) => {
-                sliderBucketRef.current = Math.floor(Math.round(val) / 4);
-              }}
-              onValueChange={(val) => {
-                const rounded = Math.round(val);
-                setDraftBottleLevelOz(rounded);
-                const bucket = Math.floor(rounded / 4);
-                if (bucket !== sliderBucketRef.current) {
-                  sliderBucketRef.current = bucket;
-                  Haptics.selectionAsync();
-                }
-              }}
-              minimumValue={0}
-              maximumValue={bottleCapacityOz}
-              step={1}
-              minimumTrackTintColor={palette.accent}
-              maximumTrackTintColor={palette.bgEdge}
-              thumbTintColor={palette.accent}
-            />
-          </View>
-        </View>
-
-        {/* 2. Primary CTA — logs consumed = committed - draft */}
+        {/* 1. Primary CTA — logs consumed = committed - draft */}
         <Pressable
           style={({ pressed }) => [
             styles.ctaButton,
@@ -366,7 +423,7 @@ export function HomeScreen() {
           </Text>
         </Pressable>
 
-        {/* 3. Refill button — resets digital bottle to full, no intake change */}
+        {/* 2. Refill button — resets digital bottle to full, no intake change */}
         <Pressable
           style={({ pressed }) => [
             styles.refillButton,
@@ -387,7 +444,7 @@ export function HomeScreen() {
           </Text>
         </Pressable>
 
-        {/* 4. Undo affordance — bare text link, visible only when an action is undoable */}
+        {/* 3. Undo affordance — bare text link, visible only when an action is undoable */}
         {lastAction !== null && (
           <Pressable
             style={styles.undoLink}
@@ -447,12 +504,18 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  // ── Progress block ────────────────────────────────────────────────────────────
+  // ── Progress block — flat, editorial, no background card ────────────────────
   progressBlock: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
     paddingBottom: spacing.md,
     alignItems: 'center',
+  },
+  sectionDivider: {
+    height: 1,
+    backgroundColor: palette.bgEdge,
+    marginHorizontal: spacing.xl,
+    marginBottom: spacing.xs,
   },
   intakeLine: {
     marginBottom: spacing.xs,
@@ -488,19 +551,22 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     flexDirection: 'row',
     alignSelf: 'stretch',
+    marginBottom: spacing.xs,
   },
   progressFill: {
     height: 6,
   },
 
-  // ── Bottle zone ───────────────────────────────────────────────────────────────
-  bottleZone: {
+  // ── Bottle workspace — horizontal row: bottle + ruler sidecar ────────────────
+  bottleWorkspace: {
     flex: 1,
-    alignItems: 'center',
+    flexDirection: 'row',
+    alignItems: 'flex-start',
     justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
   },
-  bottleWrapper: {
+  bottleColumn: {
     alignItems: 'center',
   },
   bottleCap: {
@@ -520,21 +586,69 @@ const styles = StyleSheet.create({
     right: 0,
     opacity: 0.75,
   },
+  // ── Ruler sidecar ─────────────────────────────────────────────────────────────
+  rulerGap: {
+    width: 20,
+  },
+  rulerSidecar: {
+    alignItems: 'center',
+  },
+  rulerArea: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    height: BOTTLE_BODY_H,
+  },
+
+  // Slider is BOTTLE_BODY_H × 44 in layout space, positioned so its center
+  // coincides with the center of the RULER_W × BOTTLE_BODY_H container,
+  // then rotated -90° to render vertically:
+  //   top  → max value (committedBottleLevelOz)
+  //   bottom → min value (0)
+  rulerSliderContainer: {
+    width: RULER_W,
+    height: BOTTLE_BODY_H,
+    overflow: 'visible',
+  },
+  verticalSlider: {
+    position: 'absolute',
+    width: BOTTLE_BODY_H,
+    height: RULER_W,
+    left: (RULER_W - BOTTLE_BODY_H) / 2,   // = -78
+    top: (BOTTLE_BODY_H - RULER_W) / 2,    // = 78
+    transform: [{ rotate: '-90deg' }],
+  },
+
+  // Live draft label anchored directly below the track
+  ozLeftLabel: {
+    marginTop: spacing.sm,
+    fontSize: fontSize.small,
+    color: palette.inkSoft,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+
+  // Quarter-mark dots beside the slider track
+  rulerMarksColumn: {
+    width: 6,
+    height: BOTTLE_BODY_H,
+    position: 'relative',
+    marginLeft: 4,
+  },
+  rulerMark: {
+    position: 'absolute',
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: palette.inkMuted,
+    left: 0,
+    opacity: 0.5,
+  },
 
   // ── Interaction zone ──────────────────────────────────────────────────────────
   interactionZone: {
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.lg,
     gap: spacing.md,
-  },
-
-  // ── Slider ────────────────────────────────────────────────────────────────────
-  sliderRow: {
-    paddingHorizontal: 0,
-  },
-  slider: {
-    width: '100%',
-    height: 40,
   },
 
   // ── Primary CTA ───────────────────────────────────────────────────────────────
@@ -593,19 +707,5 @@ const styles = StyleSheet.create({
     fontSize: fontSize.body,
     fontWeight: '500',
     color: palette.support,
-  },
-
-  // ── Labeled interaction groups ─────────────────────────────────────────────
-  labeledGroup: {
-    gap: spacing.xs,
-  },
-  eyebrowLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 1.5,
-    color: palette.support,
-    textAlign: 'center',
-    opacity: 0.85,
   },
 });
