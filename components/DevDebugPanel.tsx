@@ -33,6 +33,7 @@ export function DevDebugPanel() {
   const {
     todayIntakeOz, bottleLevelOz, dailyGoalOz, recommendedGoalOz,
     streakCount, lastOpenedDate, lastGoalHitDate, lastAction,
+    eventLedger, lastEventId,
     logWater, runNewDayCheck,
     _setLastOpenedDateToYesterday, resetHydration,
   } = useHydrationStore();
@@ -145,6 +146,46 @@ export function DevDebugPanel() {
         </ButtonRow>
       </Section>
 
+      {/* ── Ledger inspector (DEV-only QA aid) ── */}
+      <Section label="EVENT LEDGER (dev inspector)">
+        <KV k="total events" v={eventLedger.length} />
+        <KV k="lastEventId" v={lastEventId ? `…${lastEventId.slice(-8)}` : 'null'} />
+        <Spacer />
+        {eventLedger.length === 0 ? (
+          <Text style={styles.mono}>no events yet</Text>
+        ) : (
+          [...eventLedger].reverse().slice(0, 3).map((ev, i) => (
+            <View key={ev.id} style={styles.ledgerEntry}>
+              <Text style={styles.ledgerIndex}>#{eventLedger.length - i}</Text>
+              <KV k="id" v={`…${ev.id.slice(-8)}`} />
+              <KV k="type" v={ev.type} />
+              <KV k="time" v={ev.timestampIsoUtc.replace('T', ' ').replace('Z', 'Z').slice(0, 23)} />
+              <KV k="date" v={ev.date} />
+              {ev.type === 'drink' && (
+                <>
+                  <KV k="volumeOz" v={ev.volumeOz} />
+                  <KV k="effectiveHydrationOz" v={ev.effectiveHydrationOz} />
+                  <KV k="beverageType" v={ev.beverageType} />
+                </>
+              )}
+              {ev.type === 'refill' && (
+                <>
+                  <KV k="previousLevelOz" v={ev.previousLevelOz} />
+                  <KV k="newLevelOz" v={ev.newLevelOz} />
+                </>
+              )}
+            </View>
+          ))
+        )}
+        <Spacer />
+        <Button
+          // eslint-disable-next-line no-console
+          title="Log full ledger to console"
+          onPress={() => console.log('[HydroQuest ledger]', JSON.stringify(eventLedger, null, 2))}
+          color="#555"
+        />
+      </Section>
+
       {/* ── Debug actions ── */}
       <Section label="DEBUG ACTIONS">
         <Button
@@ -254,6 +295,19 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
     alignItems: 'center',
+  },
+  ledgerEntry: {
+    marginBottom: 8,
+    paddingLeft: 8,
+    borderLeftWidth: 2,
+    borderLeftColor: '#ccc',
+  },
+  ledgerIndex: {
+    fontFamily: 'Courier',
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#aaa',
+    marginBottom: 2,
   },
   mono: {
     fontFamily: 'Courier',

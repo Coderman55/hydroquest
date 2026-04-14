@@ -1,6 +1,7 @@
 // HydroQuest — Hydration / streak / date Zustand store.
 // Persisted to AsyncStorage via persist middleware.
-// `lastAction` is intentionally excluded from persistence (ephemeral session value).
+// `lastAction` and `lastEventId` are intentionally excluded from persistence
+// (ephemeral session values).
 //
 // This store does NOT import the profile store. To avoid circular dependencies,
 // `runNewDayCheck` accepts the current profile as a parameter — the caller
@@ -20,7 +21,32 @@ import {
   type GoalInputs,
   type GoalResult,
 } from '../lib/calculateGoal';
-import { getDaysBetween, getTodayString } from '../lib/dateUtils';
+import { getDaysBetween, getTodayString, getUtcIsoTimestamp } from '../lib/dateUtils';
+
+// ---------- Event ledger types ----------
+// Additive infrastructure only — no UI reads this in the MVP.
+// Kept minimal: no derived, speculative, or sync-status fields today.
+
+type DrinkEvent = {
+  id: string;
+  timestampIsoUtc: string; // canonical UTC ISO 8601, e.g. "2026-04-14T09:32:15.123Z"
+  date: string;            // local calendar date "YYYY-MM-DD" — partition key for day queries
+  type: 'drink';
+  beverageType: 'water';   // Day 1 only; field exists now for future drink-type expansion
+  volumeOz: number;        // raw consumed amount
+  effectiveHydrationOz: number; // equals volumeOz for water; future beverage types may differ
+};
+
+type RefillEvent = {
+  id: string;
+  timestampIsoUtc: string;
+  date: string;
+  type: 'refill';
+  previousLevelOz: number;
+  newLevelOz: number;
+};
+
+type HydrationEvent = DrinkEvent | RefillEvent;
 
 // ---------- Undo action discriminated union ----------
 // Captures the exact pre-action snapshot so undoLastAction can restore state
@@ -39,6 +65,17 @@ type LastAction =
       prevBottleLevelOz: number | null;
     };
 
+// ---------- ID generation ----------
+// UUID v4-format string using Math.random(). No external dependency.
+// Sufficient for local dedup and future Apple Health sync idempotency.
+function generateEventId(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 // ---------- State shape ----------
 type HydrationState = {
   schemaVersion: string;
@@ -55,11 +92,24 @@ type HydrationState = {
    */
   bottleLevelOz: number | null;
   /**
+   * Private persisted action ledger. Appended on each committed drink or refill.
+   * Used as future infrastructure for Apple Health sync and drink-type logging.
+   * No UI reads this in the MVP.
+   */
+  eventLedger: HydrationEvent[];
+  /**
    * Ephemeral undo buffer. Holds the last committed action (drink or refill).
    * null = nothing to undo this session.
    * Excluded from persistence — cleared on cold start and new-day reset.
    */
   lastAction: LastAction | null;
+  /**
+   * Ephemeral. Holds the id of the last ledger event written this session.
+   * Used by undoLastAction to pop the matching ledger entry.
+   * null = no undoable event this session.
+   * Excluded from persistence — cleared on cold start and new-day reset.
+   */
+  lastEventId: string | null;
   /** True after persist middleware finishes loading from AsyncStorage. */
   hasHydrated: boolean;
 };
@@ -91,6 +141,7 @@ type HydrationActions = {
    * No-op if lastAction is null.
    * Drink undo: restores the exact pre-action snapshot from lastAction.
    * Refill undo: restores prior bottle level only; intake and streak are not changed.
+   * Also pops the matching last ledger entry if lastEventId matches.
    */
   undoLastAction: () => void;
   /** Debug-only: rewinds lastOpenedDate to yesterday so new-day logic can be tested. */
@@ -106,7 +157,9 @@ const initialState: Omit<HydrationState, 'hasHydrated'> = {
   lastOpenedDate: null,
   lastGoalHitDate: null,
   bottleLevelOz: null,
+  eventLedger: [],
   lastAction: null,
+  lastEventId: null,
 };
 
 function isPositiveFinite(n: number): boolean {
@@ -157,6 +210,18 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
           prevLastGoalHitDate: state.lastGoalHitDate,
         };
 
+        // Build and append a ledger event for this committed drink.
+        const eventId = generateEventId();
+        const drinkEvent: HydrationEvent = {
+          id: eventId,
+          timestampIsoUtc: getUtcIsoTimestamp(),
+          date: today,
+          type: 'drink',
+          beverageType: 'water',
+          volumeOz: amountOz,
+          effectiveHydrationOz: amountOz,
+        };
+
         // Streak: increment immediately on first goal hit of the day.
         const justHitGoal =
           newIntake >= state.dailyGoalOz && state.lastGoalHitDate !== today;
@@ -167,11 +232,15 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
             streakCount: state.streakCount + 1,
             lastGoalHitDate: today,
             lastAction: action,
+            lastEventId: eventId,
+            eventLedger: [...state.eventLedger, drinkEvent],
           });
         } else {
           set({
             todayIntakeOz: newIntake,
             lastAction: action,
+            lastEventId: eventId,
+            eventLedger: [...state.eventLedger, drinkEvent],
           });
         }
       },
@@ -200,14 +269,27 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
         const current = state.bottleLevelOz;
 
         // null means already full; numeric >= capacity means already full.
-        // Either way: no-op, no lastAction written.
+        // Either way: no-op, no lastAction or ledger event written.
         if (current === null || current >= fullCapacityOz) {
           return;
         }
 
+        // Build and append a ledger event for this committed refill.
+        const eventId = generateEventId();
+        const refillEvent: HydrationEvent = {
+          id: eventId,
+          timestampIsoUtc: getUtcIsoTimestamp(),
+          date: getTodayString(),
+          type: 'refill',
+          previousLevelOz: current,
+          newLevelOz: fullCapacityOz,
+        };
+
         set({
           lastAction: { type: 'refill', prevBottleLevelOz: current },
+          lastEventId: eventId,
           bottleLevelOz: fullCapacityOz,
+          eventLedger: [...state.eventLedger, refillEvent],
         });
       },
 
@@ -225,6 +307,8 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
             lastOpenedDate: today,
             todayIntakeOz: 0,
             lastAction: null,
+            lastEventId: null,
+            // eventLedger intentionally preserved — carries across days.
           });
           return;
         }
@@ -248,6 +332,8 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
             streakCount: yesterdayWasSuccess ? state.streakCount : 0,
             todayIntakeOz: 0,
             lastAction: null,
+            lastEventId: null,
+            // eventLedger intentionally preserved — carries across days.
             // bottleLevelOz intentionally NOT reset — the digital bottle persists across midnight.
             recommendedGoalOz: newGoal.recommendedGoalOz,
             dailyGoalOz: newGoal.dailyGoalOz,
@@ -259,6 +345,8 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
             streakCount: 0,
             todayIntakeOz: 0,
             lastAction: null,
+            lastEventId: null,
+            // eventLedger intentionally preserved — carries across days.
             // bottleLevelOz intentionally NOT reset.
             recommendedGoalOz: newGoal.recommendedGoalOz,
             dailyGoalOz: newGoal.dailyGoalOz,
@@ -272,13 +360,23 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
       },
 
       resetHydration: () => {
-        // initialState includes bottleLevelOz: null and lastAction: null.
+        // initialState includes eventLedger: [], lastAction: null, lastEventId: null.
         set({ ...initialState });
       },
 
       undoLastAction: () => {
-        const { lastAction } = get();
+        const { lastAction, lastEventId, eventLedger } = get();
         if (lastAction === null) return;
+
+        // Pop the matching last ledger entry if it was written by this session's action.
+        // O(1): only ever checks the final element; no scan.
+        const lastEntry = eventLedger[eventLedger.length - 1];
+        const newLedger =
+          lastEventId !== null &&
+          eventLedger.length > 0 &&
+          lastEntry.id === lastEventId
+            ? eventLedger.slice(0, -1)
+            : eventLedger;
 
         if (lastAction.type === 'drink') {
           // Restore exact pre-action snapshot directly — no derived rollback calculations.
@@ -289,6 +387,8 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
             lastGoalHitDate: lastAction.prevLastGoalHitDate,
             bottleLevelOz: lastAction.prevBottleLevelOz,
             lastAction: null,
+            lastEventId: null,
+            eventLedger: newLedger,
           });
         } else {
           // type === 'refill': only restore bottle level.
@@ -296,6 +396,8 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
           set({
             bottleLevelOz: lastAction.prevBottleLevelOz,
             lastAction: null,
+            lastEventId: null,
+            eventLedger: newLedger,
           });
         }
       },
@@ -312,9 +414,22 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
     {
       name: HYDRATION_STORE_KEY,
       storage: createJSONStorage(() => AsyncStorage),
+      // Zustand persist version: bumped to 1 to trigger migration on existing installs.
+      // This is a separate numeric counter from the schemaVersion string in state.
+      version: 1,
+      // Migrate v0 (schema v1, no eventLedger) → v1 (schema v2, eventLedger: []).
+      // Old installs get an empty ledger; no historical events are reconstructed.
+      migrate: (persistedState: unknown, version: number) => {
+        if (version === 0) {
+          const old = persistedState as Record<string, unknown>;
+          return { ...old, schemaVersion: '2', eventLedger: [] };
+        }
+        return persistedState;
+      },
       // Persisted: schemaVersion, todayIntakeOz, dailyGoalOz, recommendedGoalOz,
-      //            streakCount, lastOpenedDate, lastGoalHitDate, bottleLevelOz.
-      // Not persisted: lastAction, hasHydrated.
+      //            streakCount, lastOpenedDate, lastGoalHitDate, bottleLevelOz,
+      //            eventLedger.
+      // Not persisted: lastAction, lastEventId, hasHydrated.
       partialize: (state) => ({
         schemaVersion: state.schemaVersion,
         todayIntakeOz: state.todayIntakeOz,
@@ -324,6 +439,7 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
         lastOpenedDate: state.lastOpenedDate,
         lastGoalHitDate: state.lastGoalHitDate,
         bottleLevelOz: state.bottleLevelOz,
+        eventLedger: state.eventLedger,
       }),
       onRehydrateStorage: () => (state, error) => {
         if (error && __DEV__) {

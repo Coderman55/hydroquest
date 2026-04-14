@@ -3,6 +3,15 @@
 // This avoids midnight edge-case bugs around new-day detection.
 
 /**
+ * Returns the current UTC time as a canonical ISO 8601 timestamp string.
+ * Used as the persisted timestamp field on event ledger entries.
+ * Example: "2026-04-14T09:32:15.123Z"
+ */
+export function getUtcIsoTimestamp(): string {
+  return new Date().toISOString();
+}
+
+/**
  * Returns today's local calendar date as "YYYY-MM-DD".
  */
 export function getTodayString(): string {

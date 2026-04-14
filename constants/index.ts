@@ -7,7 +7,7 @@ export const PROFILE_STORE_KEY = '@hydroquest/profile';
 export const HYDRATION_STORE_KEY = '@hydroquest/hydration';
 
 // ---------- Schema version (bump on breaking persisted-shape changes) ----------
-export const SCHEMA_VERSION = '1';
+export const SCHEMA_VERSION = '2';
 
 // ---------- Goal formula bounds ----------
 export const DEFAULT_GOAL_OZ = 72; // fallback when calculateGoal receives invalid input
