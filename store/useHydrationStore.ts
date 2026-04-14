@@ -22,6 +22,7 @@ import {
   type GoalResult,
 } from '../lib/calculateGoal';
 import { getDaysBetween, getTodayString, getUtcIsoTimestamp } from '../lib/dateUtils';
+import { writeDrinkSample, deleteDrinkSample } from '../lib/healthKit';
 
 // ---------- Event ledger types ----------
 // Additive infrastructure only — no UI reads this in the MVP.
@@ -35,6 +36,12 @@ type DrinkEvent = {
   beverageType: 'water';   // Day 1 only; field exists now for future drink-type expansion
   volumeOz: number;        // raw consumed amount
   effectiveHydrationOz: number; // equals volumeOz for water; future beverage types may differ
+  /**
+   * UUID of the corresponding Apple Health dietary-water sample.
+   * Absent when HealthKit is disabled or the write failed.
+   * Used by undoLastAction to delete the matching sample on undo.
+   */
+  hkSampleUuid?: string;
 };
 
 type RefillEvent = {
@@ -243,6 +250,33 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
             eventLedger: [...state.eventLedger, drinkEvent],
           });
         }
+
+        // ── Apple Health write (non-blocking follow-on) ──────────────────────
+        // Local state is already committed above. HealthKit write is a
+        // fire-and-forget side effect. Any failure leaves local state intact.
+        //
+        // We read healthKitEnabled lazily via require() to avoid creating a
+        // circular module-level import between the two store files.
+        // By the time any action runs, both stores are fully initialised.
+        {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { useProfileStore } = require('./useProfileStore') as typeof import('./useProfileStore');
+          if (useProfileStore.getState().healthKitEnabled) {
+            writeDrinkSample(amountOz, drinkEvent.timestampIsoUtc).then((hkUuid) => {
+              if (hkUuid) {
+                // Attach the HealthKit UUID to the event so undoLastAction can
+                // delete it. Uses functional set to safely read current ledger.
+                set((prev) => ({
+                  eventLedger: prev.eventLedger.map((e) =>
+                    e.id === eventId
+                      ? ({ ...e, hkSampleUuid: hkUuid } as HydrationEvent)
+                      : e,
+                  ),
+                }));
+              }
+            });
+          }
+        }
       },
 
       setBottleLevel: (oz) => {
@@ -378,6 +412,15 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
             ? eventLedger.slice(0, -1)
             : eventLedger;
 
+        // Capture HealthKit UUID before removing the entry.
+        // Only drink events can have hkSampleUuid; refill events never sync.
+        const hkUuidToDelete =
+          lastAction.type === 'drink' &&
+          lastEventId !== null &&
+          lastEntry?.id === lastEventId
+            ? (lastEntry as DrinkEvent).hkSampleUuid ?? null
+            : null;
+
         if (lastAction.type === 'drink') {
           // Restore exact pre-action snapshot directly — no derived rollback calculations.
           // The snapshot was captured before any mutation in logWater, so this is always safe.
@@ -400,6 +443,13 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
             eventLedger: newLedger,
           });
         }
+
+        // ── Apple Health delete (non-blocking, best-effort) ──────────────────
+        // Local undo is already committed above. If the HealthKit delete fails,
+        // the sample becomes orphaned in the Health app — acceptable for v1.
+        if (hkUuidToDelete) {
+          deleteDrinkSample(hkUuidToDelete);
+        }
       },
 
       _setLastOpenedDateToYesterday: () => {
@@ -414,15 +464,21 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
     {
       name: HYDRATION_STORE_KEY,
       storage: createJSONStorage(() => AsyncStorage),
-      // Zustand persist version: bumped to 1 to trigger migration on existing installs.
+      // Zustand persist version: bumped to 2 to register the new migration path.
       // This is a separate numeric counter from the schemaVersion string in state.
-      version: 1,
-      // Migrate v0 (schema v1, no eventLedger) → v1 (schema v2, eventLedger: []).
-      // Old installs get an empty ledger; no historical events are reconstructed.
+      version: 2,
+      // v0 → v1: add eventLedger (schema v1 → v2).
+      // v1 → v2: DrinkEvent gains optional hkSampleUuid. Existing events are
+      //          valid as-is since the field is optional; no data transformation needed.
       migrate: (persistedState: unknown, version: number) => {
         if (version === 0) {
           const old = persistedState as Record<string, unknown>;
           return { ...old, schemaVersion: '2', eventLedger: [] };
+        }
+        if (version === 1) {
+          // hkSampleUuid is optional on DrinkEvent — existing persisted events
+          // without it are structurally valid. No transformation required.
+          return persistedState;
         }
         return persistedState;
       },

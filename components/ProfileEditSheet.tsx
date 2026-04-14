@@ -6,13 +6,21 @@
 
 import React, { useEffect, useState } from 'react';
 import {
+  Alert,
   Modal,
+  Platform,
   Pressable,
   SafeAreaView,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from 'react-native';
+
+import {
+  isHealthKitAvailable,
+  requestHealthKitAuthorization,
+} from '../lib/healthKit';
 
 import {
   ACTIVITY_LEVELS,
@@ -69,10 +77,13 @@ export function ProfileEditSheet({ visible, onClose }: Props) {
   const storeBottleId    = useProfileStore((s) => s.selectedBottleId);
   const storeBottleColor = useProfileStore((s) => s.bottleColor);
 
+  const storeHealthKitEnabled = useProfileStore((s) => s.healthKitEnabled);
+
   // ── Store actions ──────────────────────────────────────────────────────────
-  const setClimate       = useProfileStore((s) => s.setClimate);
-  const setActivityLevel = useProfileStore((s) => s.setActivityLevel);
-  const setProfileField  = useProfileStore((s) => s.setProfileField);
+  const setClimate          = useProfileStore((s) => s.setClimate);
+  const setActivityLevel    = useProfileStore((s) => s.setActivityLevel);
+  const setProfileField     = useProfileStore((s) => s.setProfileField);
+  const setHealthKitEnabled = useProfileStore((s) => s.setHealthKitEnabled);
 
   // ── Local draft state ──────────────────────────────────────────────────────
   // Initialised with reasonable fallbacks; overwritten by the useEffect below
@@ -106,6 +117,32 @@ export function ProfileEditSheet({ visible, onClose }: Props) {
     if (draftActivity !== storeActivity) setActivityLevel(draftActivity);
 
     onClose();
+  };
+
+  // ── Apple Health toggle ────────────────────────────────────────────────────
+  // Bypasses draft state — writes directly to the store because permission
+  // flow must resolve before the preference can be persisted.
+  const handleHealthKitToggle = async (value: boolean) => {
+    if (!value) {
+      setHealthKitEnabled(false);
+      return;
+    }
+    if (!isHealthKitAvailable()) {
+      Alert.alert(
+        'Not Available',
+        'Apple Health is not available on this device.',
+      );
+      return;
+    }
+    const granted = await requestHealthKitAuthorization();
+    if (granted) {
+      setHealthKitEnabled(true);
+    } else {
+      Alert.alert(
+        'Permission Required',
+        'To enable Apple Health sync, go to Settings › Health › HydroQuest and allow access.',
+      );
+    }
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -200,6 +237,26 @@ export function ProfileEditSheet({ visible, onClose }: Props) {
               ))}
             </View>
           </View>
+
+          {/* Apple Health — iOS only */}
+          {Platform.OS === 'ios' && (
+            <View style={styles.fieldBlock}>
+              <Text style={styles.fieldLabel}>Apple Health</Text>
+              <View style={styles.healthKitRow}>
+                <View style={styles.healthKitTextBlock}>
+                  <Text style={styles.healthKitSubtitle}>
+                    Write water intake to Apple Health
+                  </Text>
+                </View>
+                <Switch
+                  value={storeHealthKitEnabled}
+                  onValueChange={handleHealthKitToggle}
+                  trackColor={{ false: palette.bgEdge, true: palette.accent }}
+                  thumbColor={palette.white}
+                />
+              </View>
+            </View>
+          )}
 
         </View>
 
@@ -311,6 +368,28 @@ const styles = StyleSheet.create({
   },
   swatchActive: {
     borderColor: palette.ink,
+  },
+
+  // ── Apple Health row ─────────────────────────────────────────────────────────
+  healthKitRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: palette.bgSoft,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm + 2,
+    borderWidth: 1.5,
+    borderColor: palette.bgEdge,
+  },
+  healthKitTextBlock: {
+    flex: 1,
+    marginRight: spacing.md,
+  },
+  healthKitSubtitle: {
+    fontSize: fontSize.body,
+    fontWeight: '500',
+    color: palette.ink,
   },
 
   // ── Footer ────────────────────────────────────────────────────────────────────

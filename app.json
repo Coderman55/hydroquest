@@ -30,6 +30,16 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "plugins": [
+      [
+        "@kingstinct/react-native-healthkit",
+        {
+          "NSHealthShareUsageDescription": "HydroQuest does not currently read your health data. This permission is reserved for a future update.",
+          "NSHealthUpdateUsageDescription": "HydroQuest writes your water intake to Apple Health so you can view hydration alongside your other health data.",
+          "background": false
+        }
+      ]
+    ],
     "extra": {
       "eas": {
         "projectId": "228db30d-67ba-4966-9d09-7ef46e4577b8"

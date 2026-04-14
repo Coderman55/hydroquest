@@ -36,6 +36,8 @@ type EditableProfileFields = {
 type ProfileState = EditableProfileFields & {
   schemaVersion: string;
   onboardingComplete: boolean;
+  /** Whether the user has opted in to Apple Health write sync. iOS only. */
+  healthKitEnabled: boolean;
   /** True after persist middleware finishes loading from AsyncStorage. */
   hasHydrated: boolean;
 };
@@ -62,6 +64,12 @@ type ProfileActions = {
    * the daily goal with the new activity level.
    */
   setActivityLevel: (level: ActivityLevel) => void;
+  /**
+   * Persist the user's Apple Health opt-in preference.
+   * The UI (ProfileEditSheet) is responsible for running the availability
+   * check and authorization request before calling this with true.
+   */
+  setHealthKitEnabled: (value: boolean) => void;
   setHasHydrated: (value: boolean) => void;
   /** Reset everything to initial state. Used by debug "Reset All". */
   resetProfile: () => void;
@@ -70,6 +78,7 @@ type ProfileActions = {
 const initialState: Omit<ProfileState, 'hasHydrated'> = {
   schemaVersion: SCHEMA_VERSION,
   onboardingComplete: false,
+  healthKitEnabled: false,
   age: null,
   sex: null,
   weightLb: null,
@@ -165,6 +174,10 @@ export const useProfileStore = create<ProfileState & ProfileActions>()(
         }
       },
 
+      setHealthKitEnabled: (value) => {
+        set({ healthKitEnabled: value });
+      },
+
       setHasHydrated: (value) => {
         set({ hasHydrated: value });
       },
@@ -180,6 +193,7 @@ export const useProfileStore = create<ProfileState & ProfileActions>()(
       partialize: (state) => ({
         schemaVersion: state.schemaVersion,
         onboardingComplete: state.onboardingComplete,
+        healthKitEnabled: state.healthKitEnabled,
         age: state.age,
         sex: state.sex,
         weightLb: state.weightLb,
