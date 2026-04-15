@@ -130,11 +130,12 @@ type HydrationActions = {
    */
   setBottleLevel: (oz: number) => void;
   /**
-   * Refill the bottle to full capacity. No-op if already at or above capacity.
+   * Refill the bottle to a target level. No-op if current level is already at
+   * or above targetLevelOz, or if bottleLevelOz is null (treated as full).
    * Does not touch todayIntakeOz, streakCount, or lastGoalHitDate.
-   * Caller must pass the current bottle's full capacity.
+   * Tap path: pass bottleCapacityOz. Hold-release path: pass held preview level.
    */
-  refillBottle: (fullCapacityOz: number) => void;
+  refillBottle: (targetLevelOz: number) => void;
   /** Write goal fields. Called by profile store after onboarding/climate change. */
   setGoal: (goal: GoalResult) => void;
   /** Run the new-day reset algorithm from Logic §10. Caller passes current profile. */
@@ -290,11 +291,11 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
         set({ bottleLevelOz: oz });
       },
 
-      refillBottle: (fullCapacityOz) => {
-        if (!isPositiveFinite(fullCapacityOz)) {
+      refillBottle: (targetLevelOz) => {
+        if (!isPositiveFinite(targetLevelOz)) {
           if (__DEV__) {
             // eslint-disable-next-line no-console
-            console.warn('[refillBottle] Rejected invalid capacity:', fullCapacityOz);
+            console.warn('[refillBottle] Rejected invalid target level:', targetLevelOz);
           }
           return;
         }
@@ -302,9 +303,9 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
         const state = get();
         const current = state.bottleLevelOz;
 
-        // null means already full; numeric >= capacity means already full.
-        // Either way: no-op, no lastAction or ledger event written.
-        if (current === null || current >= fullCapacityOz) {
+        // null means already full; numeric >= target means no-op.
+        // Either way: no lastAction or ledger event written.
+        if (current === null || current >= targetLevelOz) {
           return;
         }
 
@@ -316,13 +317,13 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
           date: getTodayString(),
           type: 'refill',
           previousLevelOz: current,
-          newLevelOz: fullCapacityOz,
+          newLevelOz: targetLevelOz,
         };
 
         set({
           lastAction: { type: 'refill', prevBottleLevelOz: current },
           lastEventId: eventId,
-          bottleLevelOz: fullCapacityOz,
+          bottleLevelOz: targetLevelOz,
           eventLedger: [...state.eventLedger, refillEvent],
         });
       },

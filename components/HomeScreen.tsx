@@ -54,6 +54,15 @@ const BOTTLE_BODY_H = 200;
 // and rotated -90° so it renders vertically within this container.
 const RULER_W = 44;
 
+// ─── Hold-to-fill timing constants ───────────────────────────────────────────
+// HOLD_THRESHOLD_MS  : finger must be held this long before fill preview starts.
+//                      Below this duration the gesture is treated as a tap.
+// FILL_INTERVAL_MS   : how often the preview level increments by 1 oz during hold.
+// HOLD_HAPTIC_BUCKET : haptic fires each time fill crosses this many oz.
+const HOLD_THRESHOLD_MS    = 400;
+const FILL_INTERVAL_MS     = 80;
+const HOLD_HAPTIC_BUCKET_OZ = 4;
+
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 
 export function HomeScreen() {
@@ -117,6 +126,18 @@ export function HomeScreen() {
   // Seeded on drag start so a touch at a bucket boundary doesn't fire a haptic.
   const sliderBucketRef = useRef<number>(-1);
 
+  // ── Hold-to-fill refs ─────────────────────────────────────────────────────
+  // All mutable hold state lives in refs so timer callbacks never read stale
+  // closure values, regardless of how many re-renders occur during fill.
+  const holdThresholdRef     = useRef<ReturnType<typeof setTimeout>  | null>(null);
+  const holdIntervalRef      = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** True once the hold threshold has elapsed and fill preview is active. */
+  const holdActiveRef        = useRef<boolean>(false);
+  /** Current whole-oz fill level being previewed during hold. */
+  const holdFillRef          = useRef<number>(0);
+  /** Last haptic bucket boundary crossed during hold (4 oz buckets). */
+  const holdHapticBucketRef  = useRef<number>(-1);
+
   // ── Draft bottle level (local UI state) ───────────────────────────────────
   // Represents the bottle level the user is dragging toward before confirming.
   // Not stored globally — it's transient UI state that only commits on CTA press.
@@ -128,6 +149,15 @@ export function HomeScreen() {
   useEffect(() => {
     setDraftBottleLevelOz(committedBottleLevelOz);
   }, [committedBottleLevelOz]);
+
+  // Clear hold timers on unmount — prevents orphaned callbacks if the component
+  // is torn down mid-hold (e.g., fast navigation during development).
+  useEffect(() => {
+    return () => {
+      if (holdThresholdRef.current !== null) clearTimeout(holdThresholdRef.current);
+      if (holdIntervalRef.current  !== null) clearInterval(holdIntervalRef.current);
+    };
+  }, []);
 
   // ── Bottle fill visual ────────────────────────────────────────────────────
   // Bottle previews the draft remaining level so the user sees the effect
@@ -423,7 +453,7 @@ export function HomeScreen() {
           </Text>
         </Pressable>
 
-        {/* 2. Refill button — resets digital bottle to full, no intake change */}
+        {/* 2. Refill button — tap = full refill; hold = gradual preview then commit */}
         <Pressable
           style={({ pressed }) => [
             styles.refillButton,
@@ -433,11 +463,85 @@ export function HomeScreen() {
               ? styles.refillButtonPressed
               : null,
           ]}
-          onPress={refillDisabled ? undefined : () => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            refillBottle(bottleCapacityOz);
-          }}
           disabled={refillDisabled}
+          onPressIn={() => {
+            // Guard: disabled check mirrors the Pressable disabled prop but
+            // is kept here so the logic is correct even across RN versions.
+            if (refillDisabled) return;
+
+            // Seed the fill preview at the current committed level (whole oz).
+            holdFillRef.current        = Math.floor(committedBottleLevelOz);
+            holdHapticBucketRef.current = Math.floor(committedBottleLevelOz / HOLD_HAPTIC_BUCKET_OZ);
+            holdActiveRef.current      = false;
+
+            // Start the hold-threshold window. The fill preview does NOT start
+            // until this timeout fires — taps that release before 400 ms never
+            // activate hold mode.
+            holdThresholdRef.current = setTimeout(() => {
+              holdThresholdRef.current = null;
+              holdActiveRef.current    = true;
+
+              holdIntervalRef.current = setInterval(() => {
+                const next = holdFillRef.current + 1;
+
+                if (next >= bottleCapacityOz) {
+                  // Fill reached cap — stop here, wait for release to commit.
+                  holdFillRef.current = bottleCapacityOz;
+                  setDraftBottleLevelOz(bottleCapacityOz);
+                  // One stronger haptic signals the bottle is full.
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  clearInterval(holdIntervalRef.current!);
+                  holdIntervalRef.current = null;
+                  return;
+                }
+
+                holdFillRef.current = next;
+                setDraftBottleLevelOz(next);
+
+                // Fire a subtle haptic each time fill crosses a 4 oz boundary.
+                const bucket = Math.floor(next / HOLD_HAPTIC_BUCKET_OZ);
+                if (bucket !== holdHapticBucketRef.current) {
+                  holdHapticBucketRef.current = bucket;
+                  Haptics.selectionAsync();
+                }
+              }, FILL_INTERVAL_MS);
+            }, HOLD_THRESHOLD_MS);
+          }}
+          onPressOut={() => {
+            // Always cancel timers regardless of hold mode.
+            if (holdThresholdRef.current !== null) {
+              clearTimeout(holdThresholdRef.current);
+              holdThresholdRef.current = null;
+            }
+            if (holdIntervalRef.current !== null) {
+              clearInterval(holdIntervalRef.current);
+              holdIntervalRef.current = null;
+            }
+
+            if (holdActiveRef.current) {
+              // ── Hold path ───────────────────────────────────────────────
+              // Commit exactly once at whatever preview level was reached.
+              // holdActiveRef cleared first to block any duplicate path.
+              holdActiveRef.current = false;
+              const targetOz = holdFillRef.current;
+              // Store guard also catches this, but check here for clarity.
+              if (targetOz > committedBottleLevelOz) {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                refillBottle(targetOz);
+              }
+              // If the threshold just barely fired before release and no
+              // interval ticks ran, targetOz === committedBottleLevelOz —
+              // nothing is committed. The draft-sync useEffect resets the
+              // preview automatically since committedBottleLevelOz is unchanged.
+            } else {
+              // ── Tap path ─────────────────────────────────────────────────
+              // Released before the hold threshold: full refill, same as before.
+              if (!refillDisabled) {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                refillBottle(bottleCapacityOz);
+              }
+            }
+          }}
         >
           <Text style={[styles.refillText, refillDisabled && styles.refillTextDisabled]}>
             Refill bottle
