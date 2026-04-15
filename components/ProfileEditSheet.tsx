@@ -17,10 +17,13 @@ import {
   View,
 } from 'react-native';
 
+import * as Location from 'expo-location';
+
 import {
   isHealthKitAvailable,
   requestHealthKitAuthorization,
 } from '../lib/healthKit';
+import { isWeatherKitAvailable } from '../lib/weatherKit';
 
 import {
   ACTIVITY_LEVELS,
@@ -32,6 +35,7 @@ import {
   type BottleId,
   type Climate,
 } from '../constants';
+
 import {
   BOTTLE_COLOR_HEX,
   fontSize,
@@ -66,24 +70,32 @@ const BOTTLE_LABELS: Record<BottleId, string> = {
 type Props = {
   visible: boolean;
   onClose: () => void;
+  /**
+   * Detected climate bucket from the current session's weather fetch.
+   * Passed in from HomeScreen so ProfileEditSheet never imports the weather hook.
+   * Undefined when weather is disabled or unavailable.
+   */
+  detectedClimate?: Climate;
 };
 
 // ─── ProfileEditSheet ─────────────────────────────────────────────────────────
 
-export function ProfileEditSheet({ visible, onClose }: Props) {
+export function ProfileEditSheet({ visible, onClose, detectedClimate }: Props) {
   // ── Store reads ────────────────────────────────────────────────────────────
   const storeClimate     = useProfileStore((s) => s.climate);
   const storeActivity    = useProfileStore((s) => s.activityLevel);
   const storeBottleId    = useProfileStore((s) => s.selectedBottleId);
   const storeBottleColor = useProfileStore((s) => s.bottleColor);
 
-  const storeHealthKitEnabled = useProfileStore((s) => s.healthKitEnabled);
+  const storeHealthKitEnabled     = useProfileStore((s) => s.healthKitEnabled);
+  const storeWeatherContextEnabled = useProfileStore((s) => s.weatherContextEnabled);
 
   // ── Store actions ──────────────────────────────────────────────────────────
-  const setClimate          = useProfileStore((s) => s.setClimate);
-  const setActivityLevel    = useProfileStore((s) => s.setActivityLevel);
-  const setProfileField     = useProfileStore((s) => s.setProfileField);
-  const setHealthKitEnabled = useProfileStore((s) => s.setHealthKitEnabled);
+  const setClimate                 = useProfileStore((s) => s.setClimate);
+  const setActivityLevel           = useProfileStore((s) => s.setActivityLevel);
+  const setProfileField            = useProfileStore((s) => s.setProfileField);
+  const setHealthKitEnabled        = useProfileStore((s) => s.setHealthKitEnabled);
+  const setWeatherContextEnabled   = useProfileStore((s) => s.setWeatherContextEnabled);
 
   // ── Local draft state ──────────────────────────────────────────────────────
   // Initialised with reasonable fallbacks; overwritten by the useEffect below
@@ -145,6 +157,30 @@ export function ProfileEditSheet({ visible, onClose }: Props) {
     }
   };
 
+  // ── Local weather context toggle ───────────────────────────────────────────
+  // Bypasses draft state — same pattern as HealthKit.
+  // Requests foreground location permission here; preference persisted only on grant.
+  // Does not re-prompt if permission is already denied — user must go to Settings.
+  const handleWeatherToggle = async (value: boolean) => {
+    if (!value) {
+      setWeatherContextEnabled(false);
+      return;
+    }
+    if (!isWeatherKitAvailable()) {
+      // Should not be reachable since the section is iOS-only, but guard anyway.
+      return;
+    }
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status === Location.PermissionStatus.GRANTED) {
+      setWeatherContextEnabled(true);
+    } else {
+      Alert.alert(
+        'Location Access Required',
+        'To enable local weather context, go to Settings › Privacy & Security › Location Services › HydroQuest and allow access while using the app.',
+      );
+    }
+  };
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <Modal
@@ -182,6 +218,21 @@ export function ProfileEditSheet({ visible, onClose }: Props) {
                 </Pressable>
               ))}
             </View>
+            {/* Weather hint — shown only when detected climate differs from draft.
+                Tapping Update sets draft only; user must still Save explicitly. */}
+            {detectedClimate != null && detectedClimate !== draftClimate && (
+              <View style={styles.weatherHintRow}>
+                <Text style={styles.weatherHintText}>
+                  Weather suggests: {CLIMATE_LABELS[detectedClimate]}
+                </Text>
+                <Pressable
+                  onPress={() => setDraftClimate(detectedClimate)}
+                  hitSlop={8}
+                >
+                  <Text style={styles.weatherHintUpdate}>Update</Text>
+                </Pressable>
+              </View>
+            )}
           </View>
 
           {/* Activity Level */}
@@ -258,6 +309,29 @@ export function ProfileEditSheet({ visible, onClose }: Props) {
             </View>
           )}
 
+          {/* Local Weather — iOS only.
+              Enabling requests foreground location permission.
+              Preference is only persisted if permission is granted.
+              Does not automatically change climate or recompute goal. */}
+          {Platform.OS === 'ios' && (
+            <View style={styles.fieldBlock}>
+              <Text style={styles.fieldLabel}>Local Weather</Text>
+              <View style={styles.healthKitRow}>
+                <View style={styles.healthKitTextBlock}>
+                  <Text style={styles.healthKitSubtitle}>
+                    Use local weather to improve daily guidance
+                  </Text>
+                </View>
+                <Switch
+                  value={storeWeatherContextEnabled}
+                  onValueChange={handleWeatherToggle}
+                  trackColor={{ false: palette.bgEdge, true: palette.accent }}
+                  thumbColor={palette.white}
+                />
+              </View>
+            </View>
+          )}
+
         </View>
 
         {/* ── Footer: Save ──────────────────────────────────────────────────── */}
@@ -324,6 +398,24 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 0.4,
     textTransform: 'uppercase',
+  },
+
+  // ── Weather hint (below climate chips) ───────────────────────────────────────
+  weatherHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingTop: 2,
+  },
+  weatherHintText: {
+    fontSize: fontSize.small,
+    color: palette.inkSoft,
+    fontWeight: '400',
+  },
+  weatherHintUpdate: {
+    fontSize: fontSize.small,
+    color: palette.accent,
+    fontWeight: '600',
   },
 
   // ── Chips (climate, activity, bottle archetype) ───────────────────────────────

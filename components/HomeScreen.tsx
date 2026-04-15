@@ -41,6 +41,7 @@ import {
 } from '../constants/theme';
 import { useHydrationStore } from '../store/useHydrationStore';
 import { useProfileStore } from '../store/useProfileStore';
+import { useWeatherContext } from '../lib/useWeatherContext';
 import { ProfileEditSheet } from './ProfileEditSheet';
 import { CoachCard } from './CoachCard';
 import * as Haptics from 'expo-haptics';
@@ -77,10 +78,15 @@ export function HomeScreen() {
   const refillBottle    = useHydrationStore((s) => s.refillBottle);
   const undoLastAction  = useHydrationStore((s) => s.undoLastAction);
 
-  const selectedBottleId = useProfileStore((s) => s.selectedBottleId);
-  const bottleColor      = useProfileStore((s) => s.bottleColor);
-  const climate          = useProfileStore((s) => s.climate);
-  const activityLevel    = useProfileStore((s) => s.activityLevel);
+  const selectedBottleId      = useProfileStore((s) => s.selectedBottleId);
+  const bottleColor           = useProfileStore((s) => s.bottleColor);
+  const climate               = useProfileStore((s) => s.climate);
+  const activityLevel         = useProfileStore((s) => s.activityLevel);
+  const weatherContextEnabled = useProfileStore((s) => s.weatherContextEnabled);
+
+  // Ephemeral weather context — fetches once per session when enabled.
+  // Never persisted; degrades silently on any failure or denied permission.
+  const weather = useWeatherContext(weatherContextEnabled);
 
   // ── Derived: progress ──────────────────────────────────────────────────────
   const goalPercent  = dailyGoalOz > 0 ? todayIntakeOz / dailyGoalOz : 0;
@@ -232,10 +238,24 @@ export function HomeScreen() {
     }
 
   } else if (todayIntakeOz === 0 && timeBucket === 'morning') {
-    coachMessage = "Good morning! Let's get that first sip.";
+    // Weather-aware: warm day detected but manual climate is set cooler.
+    // Nudge the user to start early rather than give the generic opener.
+    if (weather.detectedClimate === 'hot' && climate !== 'hot') {
+      coachMessage = "Good morning! Warm day ahead — get that first sip in early.";
+    } else {
+      coachMessage = "Good morning! Let's get that first sip.";
+    }
 
   } else if (timeBucket === 'afternoon' && paceBucket === 'behind') {
-    if (climate === 'hot' && activityLevel !== 'low') {
+    // Weather-aware: detected hotter than the user's manual climate setting.
+    // Give a specific nudge before falling through to the generic branches.
+    if (weather.detectedClimate === 'hot' && climate !== 'hot') {
+      const tempStr =
+        weather.currentTempF != null
+          ? ` It's ${Math.round(weather.currentTempF)}°F out.`
+          : '';
+      coachMessage = `Warmer day than usual.${tempStr} Good time to catch up.`;
+    } else if (climate === 'hot' && activityLevel !== 'low') {
       coachMessage = "Warm afternoon out there. Let's close the gap.";
     } else if (climate === 'hot') {
       coachMessage = "Warm afternoon out there. Let's close the gap.";
@@ -424,6 +444,7 @@ export function HomeScreen() {
       <ProfileEditSheet
         visible={showSettings}
         onClose={() => setShowSettings(false)}
+        detectedClimate={weather.detectedClimate ?? undefined}
       />
 
       {/* ── D. Interaction zone ─────────────────────────────────────────────── */}

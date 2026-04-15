@@ -16,7 +16,11 @@
       "bundleIdentifier": "com.alexander.hydroquest",
       "supportsTablet": true,
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocationWhenInUseUsageDescription": "HydroQuest uses your location to detect local weather conditions and provide more personalized hydration guidance."
+      },
+      "entitlements": {
+        "com.apple.developer.weatherkit": true
       }
     },
     "android": {
@@ -37,6 +41,14 @@
           "NSHealthShareUsageDescription": "HydroQuest does not currently read your health data. This permission is reserved for a future update.",
           "NSHealthUpdateUsageDescription": "HydroQuest writes your water intake to Apple Health so you can view hydration alongside your other health data.",
           "background": false
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "16.0"
+          }
         }
       ]
     ],
