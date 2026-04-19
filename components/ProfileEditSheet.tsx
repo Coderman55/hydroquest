@@ -112,6 +112,10 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherCon
   const [draftBottleId, setDraftBottleId] = useState<BottleId>(storeBottleId ?? 'sport-curve');
   const [draftColor,    setDraftColor]    = useState<BottleColor>(storeBottleColor ?? 'blue');
 
+  // [DEBUG] Hidden tap counter — 5 taps on the "Local Weather" section label
+  // reveals the weather pipeline debug block. Resets on sheet close.
+  const [debugTapCount, setDebugTapCount] = useState(0);
+
   // Sync draft from store each time the sheet becomes visible.
   useEffect(() => {
     if (visible) {
@@ -119,6 +123,8 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherCon
       setDraftActivity(storeActivity ?? 'medium');
       setDraftBottleId(storeBottleId ?? 'sport-curve');
       setDraftColor(storeBottleColor ?? 'blue');
+    } else {
+      setDebugTapCount(0);
     }
   }, [visible, storeClimate, storeActivity, storeBottleId, storeBottleColor]);
 
@@ -326,7 +332,10 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherCon
               Does not automatically change climate or recompute goal. */}
           {Platform.OS === 'ios' && (
             <View style={styles.fieldBlock}>
-              <Text style={styles.fieldLabel}>Local Weather</Text>
+              {/* 5 taps on this label reveals the hidden weather debug block. */}
+              <Pressable onPress={() => setDebugTapCount((n) => n + 1)} hitSlop={8}>
+                <Text style={styles.fieldLabel}>Local Weather</Text>
+              </Pressable>
               <View style={styles.healthKitRow}>
                 <View style={styles.healthKitTextBlock}>
                   <Text style={styles.healthKitSubtitle}>
@@ -343,8 +352,8 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherCon
             </View>
           )}
 
-          {/* ── [DEBUG] Weather pipeline readout — TEMPORARY, remove before ship ── */}
-          {Platform.OS === 'ios' && weatherContext != null && (
+          {/* ── [DEBUG] Weather pipeline readout — hidden behind 5-tap gesture ── */}
+          {Platform.OS === 'ios' && weatherContext != null && debugTapCount >= 5 && (
             <View style={styles.debugBlock}>
               <Text style={styles.debugHeader}>[ DEBUG ] Weather Pipeline</Text>
               <Text style={styles.debugRow}>
