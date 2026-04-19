@@ -44,6 +44,7 @@ import { useProfileStore } from '../store/useProfileStore';
 import { useWeatherContext } from '../lib/useWeatherContext';
 import { ProfileEditSheet } from './ProfileEditSheet';
 import { CoachCard } from './CoachCard';
+import { StreakDetailSheet } from './StreakDetailSheet';
 import * as Haptics from 'expo-haptics';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
@@ -72,6 +73,8 @@ export function HomeScreen() {
   const bottleLevelOz   = useHydrationStore((s) => s.bottleLevelOz);
   const dailyGoalOz     = useHydrationStore((s) => s.dailyGoalOz);
   const streakCount     = useHydrationStore((s) => s.streakCount);
+  const lastGoalHitDate = useHydrationStore((s) => s.lastGoalHitDate);
+  const eventLedger     = useHydrationStore((s) => s.eventLedger);
   const lastAction      = useHydrationStore((s) => s.lastAction);
   const logWater        = useHydrationStore((s) => s.logWater);
   const setBottleLevel  = useHydrationStore((s) => s.setBottleLevel);
@@ -127,6 +130,9 @@ export function HomeScreen() {
 
   // ── Settings sheet visibility ──────────────────────────────────────────────
   const [showSettings, setShowSettings] = useState(false);
+
+  // ── Streak detail sheet visibility ────────────────────────────────────────
+  const [showStreakDetail, setShowStreakDetail] = useState(false);
 
   // ── Slider haptic bucket guard ─────────────────────────────────────────────
   // Seeded on drag start so a touch at a bucket boundary doesn't fire a haptic.
@@ -338,8 +344,14 @@ export function HomeScreen() {
           <Text style={styles.settingsIcon}>⚙</Text>
         </Pressable>
         <View style={styles.topRowSpacer} />
-        {streakCount > 0 && (
-          <Text style={styles.streakText}>🔥 {streakCount}</Text>
+        {streakCount > 0 ? (
+          <Pressable onPress={() => setShowStreakDetail(true)} hitSlop={8}>
+            <Text style={styles.streakText}>🔥 {streakCount}</Text>
+          </Pressable>
+        ) : (
+          <Pressable onPress={() => setShowStreakDetail(true)} hitSlop={8}>
+            <Text style={styles.historyFallbackText}>Recent activity</Text>
+          </Pressable>
         )}
       </View>
 
@@ -487,6 +499,16 @@ export function HomeScreen() {
         visible={showSettings}
         onClose={() => setShowSettings(false)}
         detectedClimate={weather.detectedClimate ?? undefined}
+      />
+
+      {/* ── F. Streak detail sheet ──────────────────────────────────────────── */}
+      <StreakDetailSheet
+        visible={showStreakDetail}
+        onClose={() => setShowStreakDetail(false)}
+        streakCount={streakCount}
+        eventLedger={eventLedger}
+        dailyGoalOz={dailyGoalOz}
+        lastGoalHitDate={lastGoalHitDate}
       />
 
       {/* ── D. Interaction zone ─────────────────────────────────────────────── */}
@@ -669,6 +691,11 @@ const styles = StyleSheet.create({
     fontSize: fontSize.body,
     color: palette.inkSoft,
     fontWeight: '500',
+  },
+  historyFallbackText: {
+    fontSize: fontSize.small,
+    color: palette.inkMuted,
+    fontWeight: '400',
   },
 
   // ── Progress block — flat, editorial, no background card ────────────────────
