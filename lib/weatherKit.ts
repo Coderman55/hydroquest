@@ -28,13 +28,27 @@ export type WeatherPayload = {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _wk: any = null;
+// Guards against repeated require attempts after a failed load.
+let _wkLoadAttempted = false;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getModule(): any | null {
   if (Platform.OS !== 'ios') return null;
-  if (!_wk) {
+  if (_wkLoadAttempted) return _wk; // null on prior failure, module ref on success
+  _wkLoadAttempted = true;
+  try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     _wk = require('expo-weather-kit');
+  } catch {
+    if (__DEV__) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[weatherKit] expo-weather-kit native module unavailable — ' +
+        'running in Expo Go or prebuild not run. Weather context disabled.',
+      );
+    }
+    // _wk stays null; isWeatherKitAvailable() still returns true (iOS check
+    // is platform-only), but fetchTodayWeather will return null gracefully.
   }
   return _wk;
 }

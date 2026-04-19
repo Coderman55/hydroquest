@@ -220,6 +220,39 @@ export function HomeScreen() {
   const isVeryClose       = remainingOz <= bottleCapacityOz * 0.5;
   const isNearBottleRange = remainingOz <= bottleCapacityOz * 1.5;
 
+  // ── Weather-derived signals ────────────────────────────────────────────────
+  // Used only for coaching copy and the passive indicator.
+  // Manual climate (from the store) remains the sole goal-driving source of truth.
+  const weatherFetched = weather.status === 'success' && weather.detectedClimate !== null;
+
+  // Today is meaningfully warmer than the user's manual climate setting.
+  const weatherDetectedHotter =
+    weatherFetched &&
+    ((weather.detectedClimate === 'hot'      && climate !== 'hot') ||
+     (weather.detectedClimate === 'moderate' && climate === 'cool'));
+
+  // Today is meaningfully cooler than the user's manual climate setting.
+  const weatherDetectedCooler =
+    weatherFetched &&
+    ((weather.detectedClimate === 'cool'     && climate !== 'cool') ||
+     (weather.detectedClimate === 'moderate' && climate === 'hot'));
+
+  // One-line string for the passive weather indicator. null when not ready.
+  const weatherLabel: string | null = (() => {
+    if (weather.status !== 'success') return null;
+    const parts: string[] = [];
+    if (weather.currentTempF != null) parts.push(`${Math.round(weather.currentTempF)}°F`);
+    if (weather.conditionSummary)     parts.push(weather.conditionSummary);
+    if (parts.length > 0) return parts.join(' · ');
+    // Fallback: at least show the detected climate bucket so the tester can
+    // confirm weather is active even when current conditions are unavailable.
+    if (weather.detectedClimate) {
+      const label = weather.detectedClimate[0].toUpperCase() + weather.detectedClimate.slice(1);
+      return `${label} conditions`;
+    }
+    return null;
+  })();
+
   let coachMessage: string;
 
   if (goalHit) {
@@ -238,25 +271,23 @@ export function HomeScreen() {
     }
 
   } else if (todayIntakeOz === 0 && timeBucket === 'morning') {
-    // Weather-aware: warm day detected but manual climate is set cooler.
-    // Nudge the user to start early rather than give the generic opener.
-    if (weather.detectedClimate === 'hot' && climate !== 'hot') {
-      coachMessage = "Good morning! Warm day ahead — get that first sip in early.";
+    // Weather-aware: any detected mismatch warmer or cooler than manual setting.
+    if (weatherDetectedHotter) {
+      coachMessage = "Good morning! Warmer day ahead — get that first sip in early.";
+    } else if (weatherDetectedCooler) {
+      coachMessage = "Good morning! Cooler day today. Ease in and stay consistent.";
     } else {
       coachMessage = "Good morning! Let's get that first sip.";
     }
 
   } else if (timeBucket === 'afternoon' && paceBucket === 'behind') {
-    // Weather-aware: detected hotter than the user's manual climate setting.
-    // Give a specific nudge before falling through to the generic branches.
-    if (weather.detectedClimate === 'hot' && climate !== 'hot') {
+    // Weather-aware: any detected mismatch hotter than manual setting.
+    if (weatherDetectedHotter) {
       const tempStr =
         weather.currentTempF != null
           ? ` It's ${Math.round(weather.currentTempF)}°F out.`
           : '';
       coachMessage = `Warmer day than usual.${tempStr} Good time to catch up.`;
-    } else if (climate === 'hot' && activityLevel !== 'low') {
-      coachMessage = "Warm afternoon out there. Let's close the gap.";
     } else if (climate === 'hot') {
       coachMessage = "Warm afternoon out there. Let's close the gap.";
     } else if (activityLevel !== 'low') {
@@ -272,10 +303,16 @@ export function HomeScreen() {
         : "Winding down? Let's top off that goal before bed.";
 
   } else if (paceBucket === 'onTrack' || paceBucket === 'ahead') {
-    coachMessage =
-      paceBucket === 'ahead'
-        ? 'Great momentum today. Sip at your leisure.'
+    // Light-touch weather acknowledgment even when progress is good.
+    if (paceBucket === 'ahead') {
+      coachMessage = weatherDetectedHotter
+        ? 'Great momentum. Warm day — keep those sips coming.'
+        : 'Great momentum today. Sip at your leisure.';
+    } else {
+      coachMessage = weatherDetectedHotter
+        ? 'Pacing well. Warm conditions today — stay consistent.'
         : 'Pacing perfectly. Keep it up.';
+    }
 
   } else {
     if (isNearBottleRange && remainingOz > bottleCapacityOz) {
@@ -334,6 +371,11 @@ export function HomeScreen() {
 
       {/* ── Coach card ──────────────────────────────────────────────────────── */}
       <CoachCard message={coachMessage} />
+
+      {/* ── Passive weather indicator — visible only on successful fetch ────── */}
+      {weatherLabel !== null && (
+        <Text style={styles.weatherIndicator}>{weatherLabel}</Text>
+      )}
 
       {/* ── C. Bottle workspace — bottle hero + vertical ruler sidecar ─────── */}
       <View style={styles.bottleWorkspace}>
@@ -680,6 +722,14 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: 6,
+  },
+
+  // ── Passive weather indicator ─────────────────────────────────────────────────
+  weatherIndicator: {
+    textAlign: 'center',
+    fontSize: fontSize.small,
+    color: palette.inkMuted,
+    paddingBottom: spacing.xs,
   },
 
   // ── Bottle workspace — horizontal row: bottle + ruler sidecar ────────────────

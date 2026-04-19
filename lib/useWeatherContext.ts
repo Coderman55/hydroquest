@@ -84,44 +84,56 @@ export function useWeatherContext(enabled: boolean): WeatherContext {
     let cancelled = false;
 
     async function fetchWeather() {
-      setStatus('loading');
-
-      // Check permission — do NOT request it; that is ProfileEditSheet's job.
-      const { status: locStatus } =
-        await Location.getForegroundPermissionsAsync();
-
-      if (locStatus !== Location.PermissionStatus.GRANTED) {
-        if (!cancelled) setStatus('denied');
-        return;
-      }
-
-      // Get current position at city-level accuracy — sufficient for weather.
-      let latitude: number;
-      let longitude: number;
       try {
-        const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        latitude  = loc.coords.latitude;
-        longitude = loc.coords.longitude;
-      } catch {
-        if (!cancelled) setStatus('error');
-        return;
+        setStatus('loading');
+
+        // Check permission — do NOT request it; that is ProfileEditSheet's job.
+        const { status: locStatus } =
+          await Location.getForegroundPermissionsAsync();
+
+        if (locStatus !== Location.PermissionStatus.GRANTED) {
+          if (!cancelled) setStatus('denied');
+          return;
+        }
+
+        // Get current position at city-level accuracy — sufficient for weather.
+        let latitude: number;
+        let longitude: number;
+        try {
+          const loc = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          });
+          latitude  = loc.coords.latitude;
+          longitude = loc.coords.longitude;
+        } catch {
+          if (!cancelled) setStatus('error');
+          return;
+        }
+
+        const payload = await fetchTodayWeather(latitude, longitude);
+
+        if (cancelled) return;
+
+        if (!payload) {
+          setStatus('error');
+          return;
+        }
+
+        setDetectedClimate(classifyClimate(payload.forecastHighF));
+        setCurrentTempF(payload.currentTempF);
+        setConditionSummary(payload.conditionSummary);
+        setStatus('success');
+      } catch (err) {
+        // Safety net — catches any unexpected synchronous throw (e.g. native
+        // module unavailable) so status never hangs at 'loading' indefinitely.
+        if (!cancelled) {
+          if (__DEV__) {
+            // eslint-disable-next-line no-console
+            console.warn('[useWeatherContext] fetchWeather threw unexpectedly:', err);
+          }
+          setStatus('error');
+        }
       }
-
-      const payload = await fetchTodayWeather(latitude, longitude);
-
-      if (cancelled) return;
-
-      if (!payload) {
-        setStatus('error');
-        return;
-      }
-
-      setDetectedClimate(classifyClimate(payload.forecastHighF));
-      setCurrentTempF(payload.currentTempF);
-      setConditionSummary(payload.conditionSummary);
-      setStatus('success');
     }
 
     fetchWeather();
