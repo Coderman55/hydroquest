@@ -499,6 +499,7 @@ export function HomeScreen() {
         visible={showSettings}
         onClose={() => setShowSettings(false)}
         detectedClimate={weather.detectedClimate ?? undefined}
+        weatherContext={weather}
       />
 
       {/* ── F. Streak detail sheet ──────────────────────────────────────────── */}

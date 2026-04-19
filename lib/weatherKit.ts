@@ -74,6 +74,16 @@ export function isWeatherKitAvailable(): boolean {
 }
 
 /**
+ * [DEBUG] Returns true if the expo-weather-kit native module actually loaded.
+ * Triggers the require attempt as a side-effect. Distinct from isWeatherKitAvailable
+ * (which only checks platform); this confirms the prebuild native module is present.
+ * Remove with the rest of the debug surface when done.
+ */
+export function isWeatherKitModuleLoaded(): boolean {
+  return getModule() !== null;
+}
+
+/**
  * Fetch today's weather for the given coordinates.
  *
  * Requests only current + daily data. Today's daily entry is `daily[0]`.

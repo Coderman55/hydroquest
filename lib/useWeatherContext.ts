@@ -13,7 +13,7 @@
 import { useEffect, useState } from 'react';
 import * as Location from 'expo-location';
 
-import { fetchTodayWeather, isWeatherKitAvailable } from './weatherKit';
+import { fetchTodayWeather, isWeatherKitAvailable, isWeatherKitModuleLoaded } from './weatherKit';
 import type { Climate } from '../constants';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -27,6 +27,18 @@ export type WeatherStatus =
   | 'unavailable'   // non-iOS platform or WeatherKit not available
   | 'error';        // location or weather fetch threw — degrade silently
 
+/** [DEBUG] Snapshot of intermediate pipeline state for in-app debugging. Remove with debug surface. */
+export type WeatherDebugInfo = {
+  /** Whether expo-weather-kit native module actually loaded (vs just being on iOS). */
+  moduleAvailable: boolean;
+  /** Raw iOS permission status string from getForegroundPermissionsAsync. */
+  permissionStatus: string | null;
+  /** Whether getCurrentPositionAsync returned coordinates. */
+  hasCoords: boolean;
+  /** Short error message from the last failure point in the pipeline. */
+  lastError: string | null;
+};
+
 export type WeatherContext = {
   status: WeatherStatus;
   /** Climate bucket classified from today's forecast high. null when unavailable. */
@@ -35,6 +47,8 @@ export type WeatherContext = {
   currentTempF: number | null;
   /** Short condition string (e.g. "Clear", "Partly Cloudy"). Flavor-only. */
   conditionSummary: string | null;
+  /** [DEBUG] Intermediate pipeline state for in-app debugging. Remove with debug surface. */
+  _debug: WeatherDebugInfo;
 };
 
 // ─── Classification ───────────────────────────────────────────────────────────
@@ -64,6 +78,12 @@ export function useWeatherContext(enabled: boolean): WeatherContext {
   const [detectedClimate, setDetectedClimate] = useState<Climate | null>(null);
   const [currentTempF, setCurrentTempF]       = useState<number | null>(null);
   const [conditionSummary, setConditionSummary] = useState<string | null>(null);
+  const [_debug, setDebug] = useState<WeatherDebugInfo>({
+    moduleAvailable: false,
+    permissionStatus: null,
+    hasCoords: false,
+    lastError: null,
+  });
 
   useEffect(() => {
     // ── Disabled path ───────────────────────────────────────────────────────
@@ -72,6 +92,7 @@ export function useWeatherContext(enabled: boolean): WeatherContext {
       setDetectedClimate(null);
       setCurrentTempF(null);
       setConditionSummary(null);
+      setDebug({ moduleAvailable: false, permissionStatus: null, hasCoords: false, lastError: null });
       return;
     }
 
@@ -87,9 +108,22 @@ export function useWeatherContext(enabled: boolean): WeatherContext {
       try {
         setStatus('loading');
 
+        // [DEBUG] Check whether the native module actually loaded on this device.
+        const modAvailable = isWeatherKitModuleLoaded();
+        if (!cancelled) setDebug(prev => ({ ...prev, moduleAvailable: modAvailable }));
+
+        if (!modAvailable) {
+          if (!cancelled) {
+            setDebug(prev => ({ ...prev, lastError: 'Native module not loaded — prebuild may be missing' }));
+            setStatus('unavailable');
+          }
+          return;
+        }
+
         // Check permission — do NOT request it; that is ProfileEditSheet's job.
         const { status: locStatus } =
           await Location.getForegroundPermissionsAsync();
+        if (!cancelled) setDebug(prev => ({ ...prev, permissionStatus: locStatus }));
 
         if (locStatus !== Location.PermissionStatus.GRANTED) {
           if (!cancelled) setStatus('denied');
@@ -105,8 +139,12 @@ export function useWeatherContext(enabled: boolean): WeatherContext {
           });
           latitude  = loc.coords.latitude;
           longitude = loc.coords.longitude;
-        } catch {
-          if (!cancelled) setStatus('error');
+          if (!cancelled) setDebug(prev => ({ ...prev, hasCoords: true }));
+        } catch (err) {
+          if (!cancelled) {
+            setDebug(prev => ({ ...prev, lastError: `Location fetch: ${String(err)}` }));
+            setStatus('error');
+          }
           return;
         }
 
@@ -115,6 +153,7 @@ export function useWeatherContext(enabled: boolean): WeatherContext {
         if (cancelled) return;
 
         if (!payload) {
+          setDebug(prev => ({ ...prev, lastError: 'fetchTodayWeather returned null — WeatherKit fetch or auth failed' }));
           setStatus('error');
           return;
         }
@@ -131,6 +170,7 @@ export function useWeatherContext(enabled: boolean): WeatherContext {
             // eslint-disable-next-line no-console
             console.warn('[useWeatherContext] fetchWeather threw unexpectedly:', err);
           }
+          setDebug(prev => ({ ...prev, lastError: `Unexpected: ${String(err)}` }));
           setStatus('error');
         }
       }
@@ -143,5 +183,5 @@ export function useWeatherContext(enabled: boolean): WeatherContext {
     };
   }, [enabled]);
 
-  return { status, detectedClimate, currentTempF, conditionSummary };
+  return { status, detectedClimate, currentTempF, conditionSummary, _debug };
 }

@@ -25,6 +25,7 @@ import {
   requestHealthKitAuthorization,
 } from '../lib/healthKit';
 import { isWeatherKitAvailable } from '../lib/weatherKit';
+import type { WeatherContext } from '../lib/useWeatherContext';
 
 import {
   ACTIVITY_LEVELS,
@@ -73,15 +74,20 @@ type Props = {
   onClose: () => void;
   /**
    * Detected climate bucket from the current session's weather fetch.
-   * Passed in from HomeScreen so ProfileEditSheet never imports the weather hook.
+   * Passed in from HomeScreen so ProfileEditSheet never calls the weather hook.
    * Undefined when weather is disabled or unavailable.
    */
   detectedClimate?: Climate;
+  /**
+   * [DEBUG] Full weather context from HomeScreen. Powers the temporary in-app
+   * debug readout. Remove this prop (and the debug block below) when done.
+   */
+  weatherContext?: WeatherContext;
 };
 
 // ─── ProfileEditSheet ─────────────────────────────────────────────────────────
 
-export function ProfileEditSheet({ visible, onClose, detectedClimate }: Props) {
+export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherContext }: Props) {
   // ── Store reads ────────────────────────────────────────────────────────────
   const storeClimate     = useProfileStore((s) => s.climate);
   const storeActivity    = useProfileStore((s) => s.activityLevel);
@@ -337,6 +343,66 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate }: Props) {
             </View>
           )}
 
+          {/* ── [DEBUG] Weather pipeline readout — TEMPORARY, remove before ship ── */}
+          {Platform.OS === 'ios' && weatherContext != null && (
+            <View style={styles.debugBlock}>
+              <Text style={styles.debugHeader}>[ DEBUG ] Weather Pipeline</Text>
+              <Text style={styles.debugRow}>
+                {'Preference:  '}
+                <Text style={styles.debugValue}>
+                  {storeWeatherContextEnabled ? 'enabled' : 'disabled'}
+                </Text>
+              </Text>
+              <Text style={styles.debugRow}>
+                {'Hook status: '}
+                <Text style={styles.debugValue}>{weatherContext.status}</Text>
+              </Text>
+              <Text style={styles.debugRow}>
+                {'Module:      '}
+                <Text style={styles.debugValue}>
+                  {weatherContext._debug.moduleAvailable ? 'loaded' : 'not loaded'}
+                </Text>
+              </Text>
+              <Text style={styles.debugRow}>
+                {'Permission:  '}
+                <Text style={styles.debugValue}>
+                  {weatherContext._debug.permissionStatus ?? '—'}
+                </Text>
+              </Text>
+              <Text style={styles.debugRow}>
+                {'Coords:      '}
+                <Text style={styles.debugValue}>
+                  {weatherContext._debug.hasCoords ? 'obtained' : 'none'}
+                </Text>
+              </Text>
+              <Text style={styles.debugRow}>
+                {'Climate:     '}
+                <Text style={styles.debugValue}>
+                  {weatherContext.detectedClimate ?? '—'}
+                </Text>
+              </Text>
+              <Text style={styles.debugRow}>
+                {'Temp:        '}
+                <Text style={styles.debugValue}>
+                  {weatherContext.currentTempF != null
+                    ? `${Math.round(weatherContext.currentTempF)}°F`
+                    : '—'}
+                </Text>
+              </Text>
+              <Text style={styles.debugRow}>
+                {'Condition:   '}
+                <Text style={styles.debugValue}>
+                  {weatherContext.conditionSummary ?? '—'}
+                </Text>
+              </Text>
+              {weatherContext._debug.lastError != null && (
+                <Text style={styles.debugError} numberOfLines={3}>
+                  {'Error: '}{weatherContext._debug.lastError}
+                </Text>
+              )}
+            </View>
+          )}
+
         </ScrollView>
 
         {/* ── Footer: Save ──────────────────────────────────────────────────── */}
@@ -490,6 +556,39 @@ const styles = StyleSheet.create({
     fontSize: fontSize.body,
     fontWeight: '500',
     color: palette.ink,
+  },
+
+  // ── [DEBUG] Weather pipeline readout — TEMPORARY ──────────────────────────────
+  debugBlock: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: 4,
+  },
+  debugHeader: {
+    fontSize: 10,
+    fontFamily: 'Courier',
+    color: '#00ff88',
+    fontWeight: '700',
+    marginBottom: 4,
+    letterSpacing: 0.5,
+  },
+  debugRow: {
+    fontSize: 10,
+    fontFamily: 'Courier',
+    color: '#888888',
+    letterSpacing: 0.3,
+  },
+  debugValue: {
+    color: '#ffffff',
+    fontWeight: '600',
+  },
+  debugError: {
+    fontSize: 10,
+    fontFamily: 'Courier',
+    color: '#ff6b6b',
+    marginTop: 4,
+    letterSpacing: 0.3,
   },
 
   // ── Footer ────────────────────────────────────────────────────────────────────
