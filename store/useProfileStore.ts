@@ -38,6 +38,8 @@ type ProfileState = EditableProfileFields & {
   onboardingComplete: boolean;
   /** Whether the user has opted in to Apple Health write sync. iOS only. */
   healthKitEnabled: boolean;
+  /** Whether the user has opted in to HealthKit step-count reads for activity context. iOS only. */
+  healthKitActivityEnabled: boolean;
   /**
    * Whether the user has opted in to local weather context. iOS only.
    * Permission is requested by the UI (ProfileEditSheet) before this is set true.
@@ -76,6 +78,7 @@ type ProfileActions = {
    * check and authorization request before calling this with true.
    */
   setHealthKitEnabled: (value: boolean) => void;
+  setHealthKitActivityEnabled: (value: boolean) => void;
   /**
    * Persist the user's weather context opt-in preference.
    * The UI (ProfileEditSheet) is responsible for requesting foreground
@@ -91,6 +94,7 @@ const initialState: Omit<ProfileState, 'hasHydrated'> = {
   schemaVersion: SCHEMA_VERSION,
   onboardingComplete: false,
   healthKitEnabled: false,
+  healthKitActivityEnabled: false,
   weatherContextEnabled: false,
   age: null,
   sex: null,
@@ -191,6 +195,10 @@ export const useProfileStore = create<ProfileState & ProfileActions>()(
         set({ healthKitEnabled: value });
       },
 
+      setHealthKitActivityEnabled: (value) => {
+        set({ healthKitActivityEnabled: value });
+      },
+
       setWeatherContextEnabled: (value) => {
         set({ weatherContextEnabled: value });
       },
@@ -211,6 +219,7 @@ export const useProfileStore = create<ProfileState & ProfileActions>()(
         schemaVersion: state.schemaVersion,
         onboardingComplete: state.onboardingComplete,
         healthKitEnabled: state.healthKitEnabled,
+        healthKitActivityEnabled: state.healthKitActivityEnabled,
         weatherContextEnabled: state.weatherContextEnabled,
         age: state.age,
         sex: state.sex,

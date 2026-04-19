@@ -16,6 +16,9 @@ const WATER_IDENTIFIER = 'HKQuantityTypeIdentifierDietaryWater' as const;
 // 'fl_oz_us' is the UnitOfVolume string for US fluid ounces in this library.
 const WATER_UNIT = 'fl_oz_us' as const;
 
+const STEP_IDENTIFIER = 'HKQuantityTypeIdentifierStepCount' as const;
+const STEP_UNIT = 'count' as const;
+
 // ─── Lazy module loader ────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -122,5 +125,69 @@ export async function deleteDrinkSample(hkSampleUuid: string): Promise<void> {
       // eslint-disable-next-line no-console
       console.warn('[healthKit] deleteDrinkSample failed:', e);
     }
+  }
+}
+
+/**
+ * Request HealthKit read-only authorization for step count.
+ *
+ * Called by ProfileEditSheet when the user enables the activity-context toggle.
+ * Uses a separate requestAuthorization call so write-water and read-steps
+ * consents remain independent — the user can enable one without the other.
+ *
+ * Returns true if authorization was granted (or was already granted).
+ */
+export async function requestHealthKitActivityAuthorization(): Promise<boolean> {
+  const hk = getModule();
+  if (!hk) return false;
+  try {
+    return await hk.requestAuthorization({
+      toShare: [],
+      toRead: [STEP_IDENTIFIER],
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read today's cumulative step count from Apple Health.
+ *
+ * Time range: midnight local time → now.
+ * Returns the integer step total, or 0 if no samples exist yet today.
+ * Returns null only on an unexpected error — callers should treat null as
+ * a signal to degrade silently rather than show an error state.
+ */
+export async function readTodayStepCount(): Promise<number | null> {
+  const hk = getModule();
+  if (!hk) return null;
+  try {
+    const now = new Date();
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const result = await hk.queryStatisticsForQuantity(
+      STEP_IDENTIFIER,
+      ['cumulativeSum'],
+      {
+        filter: {
+          date: {
+            startDate: startOfToday,
+            endDate: now,
+          },
+        },
+        unit: STEP_UNIT,
+      },
+    );
+
+    const raw = result?.sumQuantity?.quantity;
+    // No samples recorded today returns undefined sumQuantity — treat as 0.
+    return typeof raw === 'number' ? Math.round(raw) : 0;
+  } catch (e) {
+    if (__DEV__) {
+      // eslint-disable-next-line no-console
+      console.warn('[healthKit] readTodayStepCount failed:', e);
+    }
+    return null;
   }
 }

@@ -23,9 +23,11 @@ import * as Location from 'expo-location';
 import {
   isHealthKitAvailable,
   requestHealthKitAuthorization,
+  requestHealthKitActivityAuthorization,
 } from '../lib/healthKit';
 import { isWeatherKitAvailable } from '../lib/weatherKit';
 import type { WeatherContext } from '../lib/useWeatherContext';
+import type { HKActivityContext } from '../lib/useHealthKitActivity';
 
 import {
   ACTIVITY_LEVELS,
@@ -83,26 +85,34 @@ type Props = {
    * debug readout. Remove this prop (and the debug block below) when done.
    */
   weatherContext?: WeatherContext;
+  /**
+   * Ephemeral HealthKit activity context from HomeScreen.
+   * Powers the passive activity-level hint under the Activity Level chips.
+   * Undefined when healthKitActivityEnabled is false or not yet wired.
+   */
+  hkActivityContext?: HKActivityContext;
 };
 
 // ─── ProfileEditSheet ─────────────────────────────────────────────────────────
 
-export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherContext }: Props) {
+export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherContext, hkActivityContext }: Props) {
   // ── Store reads ────────────────────────────────────────────────────────────
   const storeClimate     = useProfileStore((s) => s.climate);
   const storeActivity    = useProfileStore((s) => s.activityLevel);
   const storeBottleId    = useProfileStore((s) => s.selectedBottleId);
   const storeBottleColor = useProfileStore((s) => s.bottleColor);
 
-  const storeHealthKitEnabled     = useProfileStore((s) => s.healthKitEnabled);
-  const storeWeatherContextEnabled = useProfileStore((s) => s.weatherContextEnabled);
+  const storeHealthKitEnabled          = useProfileStore((s) => s.healthKitEnabled);
+  const storeHealthKitActivityEnabled  = useProfileStore((s) => s.healthKitActivityEnabled);
+  const storeWeatherContextEnabled     = useProfileStore((s) => s.weatherContextEnabled);
 
   // ── Store actions ──────────────────────────────────────────────────────────
-  const setClimate                 = useProfileStore((s) => s.setClimate);
-  const setActivityLevel           = useProfileStore((s) => s.setActivityLevel);
-  const setProfileField            = useProfileStore((s) => s.setProfileField);
-  const setHealthKitEnabled        = useProfileStore((s) => s.setHealthKitEnabled);
-  const setWeatherContextEnabled   = useProfileStore((s) => s.setWeatherContextEnabled);
+  const setClimate                    = useProfileStore((s) => s.setClimate);
+  const setActivityLevel              = useProfileStore((s) => s.setActivityLevel);
+  const setProfileField               = useProfileStore((s) => s.setProfileField);
+  const setHealthKitEnabled           = useProfileStore((s) => s.setHealthKitEnabled);
+  const setHealthKitActivityEnabled   = useProfileStore((s) => s.setHealthKitActivityEnabled);
+  const setWeatherContextEnabled      = useProfileStore((s) => s.setWeatherContextEnabled);
 
   // ── Local draft state ──────────────────────────────────────────────────────
   // Initialised with reasonable fallbacks; overwritten by the useEffect below
@@ -166,6 +176,32 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherCon
       Alert.alert(
         'Permission Required',
         'To enable Apple Health sync, go to Settings › Health › HydroQuest and allow access.',
+      );
+    }
+  };
+
+  // ── HealthKit activity read toggle ────────────────────────────────────────
+  // Separate consent from the write-water toggle. Permission request here;
+  // preference only persisted on grant. Same pattern as handleHealthKitToggle.
+  const handleActivityReadToggle = async (value: boolean) => {
+    if (!value) {
+      setHealthKitActivityEnabled(false);
+      return;
+    }
+    if (!isHealthKitAvailable()) {
+      Alert.alert(
+        'Not Available',
+        'Apple Health is not available on this device.',
+      );
+      return;
+    }
+    const granted = await requestHealthKitActivityAuthorization();
+    if (granted) {
+      setHealthKitActivityEnabled(true);
+    } else {
+      Alert.alert(
+        'Permission Required',
+        'To enable activity context, go to Settings › Health › HydroQuest and allow access.',
       );
     }
   };
@@ -268,6 +304,23 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherCon
                 </Pressable>
               ))}
             </View>
+            {/* Health activity hint — shown only when suggestion differs from draft.
+                Tapping Update sets draft only; user must still Save explicitly. */}
+            {hkActivityContext?.status === 'success' &&
+              hkActivityContext.suggestedLevel !== null &&
+              hkActivityContext.suggestedLevel !== draftActivity && (
+              <View style={styles.weatherHintRow}>
+                <Text style={styles.weatherHintText}>
+                  Health suggests: {ACTIVITY_LABELS[hkActivityContext.suggestedLevel]}
+                </Text>
+                <Pressable
+                  onPress={() => setDraftActivity(hkActivityContext.suggestedLevel!)}
+                  hitSlop={8}
+                >
+                  <Text style={styles.weatherHintUpdate}>Update</Text>
+                </Pressable>
+              </View>
+            )}
           </View>
 
           {/* Bottle Archetype */}
@@ -323,6 +376,19 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherCon
                   thumbColor={palette.white}
                 />
               </View>
+              <View style={styles.healthKitRow}>
+                <View style={styles.healthKitTextBlock}>
+                  <Text style={styles.healthKitSubtitle}>
+                    Read activity context from Health
+                  </Text>
+                </View>
+                <Switch
+                  value={storeHealthKitActivityEnabled}
+                  onValueChange={handleActivityReadToggle}
+                  trackColor={{ false: palette.bgEdge, true: palette.accent }}
+                  thumbColor={palette.white}
+                />
+              </View>
             </View>
           )}
 
@@ -367,9 +433,9 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherCon
                 <Text style={styles.debugValue}>{weatherContext.status}</Text>
               </Text>
               <Text style={styles.debugRow}>
-                {'Module:      '}
+                {'Network:     '}
                 <Text style={styles.debugValue}>
-                  {weatherContext._debug.moduleAvailable ? 'loaded' : 'not loaded'}
+                  {weatherContext._debug.moduleAvailable ? 'available' : 'unavailable'}
                 </Text>
               </Text>
               <Text style={styles.debugRow}>

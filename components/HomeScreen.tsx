@@ -42,6 +42,7 @@ import {
 import { useHydrationStore } from '../store/useHydrationStore';
 import { useProfileStore } from '../store/useProfileStore';
 import { useWeatherContext } from '../lib/useWeatherContext';
+import { useHealthKitActivity } from '../lib/useHealthKitActivity';
 import { ProfileEditSheet } from './ProfileEditSheet';
 import { CoachCard } from './CoachCard';
 import { StreakDetailSheet } from './StreakDetailSheet';
@@ -81,15 +82,21 @@ export function HomeScreen() {
   const refillBottle    = useHydrationStore((s) => s.refillBottle);
   const undoLastAction  = useHydrationStore((s) => s.undoLastAction);
 
-  const selectedBottleId      = useProfileStore((s) => s.selectedBottleId);
-  const bottleColor           = useProfileStore((s) => s.bottleColor);
-  const climate               = useProfileStore((s) => s.climate);
-  const activityLevel         = useProfileStore((s) => s.activityLevel);
-  const weatherContextEnabled = useProfileStore((s) => s.weatherContextEnabled);
+  const selectedBottleId           = useProfileStore((s) => s.selectedBottleId);
+  const bottleColor                = useProfileStore((s) => s.bottleColor);
+  const climate                    = useProfileStore((s) => s.climate);
+  const activityLevel              = useProfileStore((s) => s.activityLevel);
+  const weatherContextEnabled      = useProfileStore((s) => s.weatherContextEnabled);
+  const healthKitActivityEnabled   = useProfileStore((s) => s.healthKitActivityEnabled);
 
   // Ephemeral weather context — fetches once per session when enabled.
   // Never persisted; degrades silently on any failure or denied permission.
   const weather = useWeatherContext(weatherContextEnabled);
+
+  // Ephemeral HealthKit activity context — reads step count once per session.
+  // Never persisted; degrades silently on any failure or denied permission.
+  // Manual activityLevel in the store remains the only goal-driving source of truth.
+  const hkActivity = useHealthKitActivity(healthKitActivityEnabled);
 
   // ── Derived: progress ──────────────────────────────────────────────────────
   const goalPercent  = dailyGoalOz > 0 ? todayIntakeOz / dailyGoalOz : 0;
@@ -243,6 +250,18 @@ export function HomeScreen() {
     ((weather.detectedClimate === 'cool'     && climate !== 'cool') ||
      (weather.detectedClimate === 'moderate' && climate === 'hot'));
 
+  // ── HealthKit activity signals ─────────────────────────────────────────────
+  // Used only for coaching copy. Manual activityLevel remains the sole
+  // goal-driving source of truth — these signals never touch the store.
+  const hkStepsHigh =
+    hkActivity.status === 'success' &&
+    (hkActivity.stepsToday ?? 0) >= 8000;
+
+  // Human-friendly rounded label, e.g. "8k", "10k". Only defined when high.
+  const hkStepLabel = hkStepsHigh
+    ? `${Math.round((hkActivity.stepsToday ?? 0) / 1000)}k`
+    : null;
+
   // One-line string for the passive weather indicator. null when not ready.
   const weatherLabel: string | null = (() => {
     if (weather.status !== 'success') return null;
@@ -277,8 +296,11 @@ export function HomeScreen() {
     }
 
   } else if (todayIntakeOz === 0 && timeBucket === 'morning') {
-    // Weather-aware: any detected mismatch warmer or cooler than manual setting.
-    if (weatherDetectedHotter) {
+    // High steps in the morning mean the user already exercised — strongest
+    // signal to get that first sip in early. Check this before weather.
+    if (hkStepsHigh) {
+      coachMessage = `Already at ${hkStepLabel} steps this morning. Get that first sip in.`;
+    } else if (weatherDetectedHotter) {
       coachMessage = "Good morning! Warmer day ahead — get that first sip in early.";
     } else if (weatherDetectedCooler) {
       coachMessage = "Good morning! Cooler day today. Ease in and stay consistent.";
@@ -287,8 +309,16 @@ export function HomeScreen() {
     }
 
   } else if (timeBucket === 'afternoon' && paceBucket === 'behind') {
-    // Weather-aware: any detected mismatch hotter than manual setting.
-    if (weatherDetectedHotter) {
+    // High steps + warm weather: strongest combined signal.
+    if (hkStepsHigh && weatherDetectedHotter) {
+      const tempStr =
+        weather.currentTempF != null
+          ? ` It's ${Math.round(weather.currentTempF)}°F out.`
+          : '';
+      coachMessage = `You've hit ${hkStepLabel} steps on a warm day.${tempStr} Good time to catch up.`;
+    } else if (hkStepsHigh) {
+      coachMessage = `You've hit ${hkStepLabel} steps today. Keep the water close.`;
+    } else if (weatherDetectedHotter) {
       const tempStr =
         weather.currentTempF != null
           ? ` It's ${Math.round(weather.currentTempF)}°F out.`
@@ -309,15 +339,25 @@ export function HomeScreen() {
         : "Winding down? Let's top off that goal before bed.";
 
   } else if (paceBucket === 'onTrack' || paceBucket === 'ahead') {
-    // Light-touch weather acknowledgment even when progress is good.
+    // Light-touch activity and weather acknowledgment when progress is good.
     if (paceBucket === 'ahead') {
-      coachMessage = weatherDetectedHotter
-        ? 'Great momentum. Warm day — keep those sips coming.'
-        : 'Great momentum today. Sip at your leisure.';
+      if (hkStepsHigh && weatherDetectedHotter) {
+        coachMessage = `${hkStepLabel} steps and a warm day — great momentum. Sip as you go.`;
+      } else if (hkStepsHigh) {
+        coachMessage = `${hkStepLabel} steps and pacing well. Sip as you go.`;
+      } else if (weatherDetectedHotter) {
+        coachMessage = 'Great momentum. Warm day — keep those sips coming.';
+      } else {
+        coachMessage = 'Great momentum today. Sip at your leisure.';
+      }
     } else {
-      coachMessage = weatherDetectedHotter
-        ? 'Pacing well. Warm conditions today — stay consistent.'
-        : 'Pacing perfectly. Keep it up.';
+      if (hkStepsHigh) {
+        coachMessage = `You've hit ${hkStepLabel} steps. Stay consistent with sips.`;
+      } else if (weatherDetectedHotter) {
+        coachMessage = 'Pacing well. Warm conditions today — stay consistent.';
+      } else {
+        coachMessage = 'Pacing perfectly. Keep it up.';
+      }
     }
 
   } else {
@@ -500,6 +540,7 @@ export function HomeScreen() {
         onClose={() => setShowSettings(false)}
         detectedClimate={weather.detectedClimate ?? undefined}
         weatherContext={weather}
+        hkActivityContext={hkActivity}
       />
 
       {/* ── F. Streak detail sheet ──────────────────────────────────────────── */}

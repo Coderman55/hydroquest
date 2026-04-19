@@ -108,17 +108,8 @@ export function useWeatherContext(enabled: boolean): WeatherContext {
       try {
         setStatus('loading');
 
-        // [DEBUG] Check whether the native module actually loaded on this device.
-        const modAvailable = isWeatherKitModuleLoaded();
-        if (!cancelled) setDebug(prev => ({ ...prev, moduleAvailable: modAvailable }));
-
-        if (!modAvailable) {
-          if (!cancelled) {
-            setDebug(prev => ({ ...prev, lastError: 'Native module not loaded — prebuild may be missing' }));
-            setStatus('unavailable');
-          }
-          return;
-        }
+        // [DEBUG] JS fetch path — isWeatherKitModuleLoaded always returns true.
+        if (!cancelled) setDebug(prev => ({ ...prev, moduleAvailable: isWeatherKitModuleLoaded() }));
 
         // Check permission — do NOT request it; that is ProfileEditSheet's job.
         const { status: locStatus } =
@@ -153,7 +144,7 @@ export function useWeatherContext(enabled: boolean): WeatherContext {
         if (cancelled) return;
 
         if (!payload) {
-          setDebug(prev => ({ ...prev, lastError: 'fetchTodayWeather returned null — WeatherKit fetch or auth failed' }));
+          setDebug(prev => ({ ...prev, lastError: 'fetchTodayWeather returned null — network fetch failed or bad response' }));
           setStatus('error');
           return;
         }

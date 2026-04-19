@@ -1,15 +1,12 @@
-// HydroQuest — WeatherKit native adapter.
+// HydroQuest — JS weather adapter (Open-Meteo).
 //
-// This is the ONLY file in the project that imports from expo-weather-kit.
-// All other files call the plain functions exported here, staying insulated
-// from library details.
+// Replaces the former expo-weather-kit native adapter. Same public API — only
+// the fetch mechanism changed. No API key. No auth. Pure network call.
 //
-// Non-iOS platforms receive safe no-ops — the native module is loaded lazily
-// so it is never initialised on Android/web.
-//
-// The caller must provide coordinates (latitude, longitude). This file does
-// NOT request location permission — that is the responsibility of the UI layer
-// (ProfileEditSheet) before the user's weatherContextEnabled preference is set.
+// Caller contract (unchanged):
+//   The caller must supply coordinates. This file does NOT request location
+//   permission — that remains ProfileEditSheet's responsibility before
+//   weatherContextEnabled is set true.
 
 import { Platform } from 'react-native';
 
@@ -24,70 +21,61 @@ export type WeatherPayload = {
   conditionSummary: string | null;
 };
 
-// ─── Lazy module loader ────────────────────────────────────────────────────────
+// ─── WMO weather code → short condition string ────────────────────────────────
+// Open-Meteo returns WMO 4677 codes. We map only the common buckets;
+// unmapped codes return null (conditionSummary shows nothing — safe).
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _wk: any = null;
-// Guards against repeated require attempts after a failed load.
-let _wkLoadAttempted = false;
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getModule(): any | null {
-  if (Platform.OS !== 'ios') return null;
-  if (_wkLoadAttempted) return _wk; // null on prior failure, module ref on success
-  _wkLoadAttempted = true;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    _wk = require('expo-weather-kit');
-  } catch {
-    if (__DEV__) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        '[weatherKit] expo-weather-kit native module unavailable — ' +
-        'running in Expo Go or prebuild not run. Weather context disabled.',
-      );
-    }
-    // _wk stays null; isWeatherKitAvailable() still returns true (iOS check
-    // is platform-only), but fetchTodayWeather will return null gracefully.
-  }
-  return _wk;
-}
-
-// ─── Temperature unit normalisation ───────────────────────────────────────────
-// expo-weather-kit reflects the device locale for temperature units.
-// Our classification thresholds are in °F, so normalise everything here.
-
-function toFahrenheit(value: number, unitSymbol: string): number {
-  if (unitSymbol === '°F') return value;
-  // Treat anything that isn't °F as Celsius (the WeatherKit default).
-  return value * (9 / 5) + 32;
-}
+const WMO_CONDITION: Record<number, string> = {
+  0:  'Clear',
+  1:  'Mainly Clear',
+  2:  'Partly Cloudy',
+  3:  'Overcast',
+  45: 'Fog',
+  48: 'Freezing Fog',
+  51: 'Light Drizzle',
+  53: 'Drizzle',
+  55: 'Heavy Drizzle',
+  61: 'Light Rain',
+  63: 'Rain',
+  65: 'Heavy Rain',
+  71: 'Light Snow',
+  73: 'Snow',
+  75: 'Heavy Snow',
+  80: 'Rain Showers',
+  81: 'Rain Showers',
+  82: 'Heavy Rain Showers',
+  85: 'Snow Showers',
+  86: 'Heavy Snow Showers',
+  95: 'Thunderstorm',
+  96: 'Thunderstorm',
+  99: 'Thunderstorm',
+};
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Returns true when WeatherKit is available on this platform (iOS only).
- * Synchronous. Used by ProfileEditSheet to gate the opt-in toggle.
+ * Returns true when weather context is available on this platform.
+ * iOS only — mirrors the former WeatherKit platform gate so ProfileEditSheet
+ * and useWeatherContext need no changes.
  */
 export function isWeatherKitAvailable(): boolean {
   return Platform.OS === 'ios';
 }
 
 /**
- * [DEBUG] Returns true if the expo-weather-kit native module actually loaded.
- * Triggers the require attempt as a side-effect. Distinct from isWeatherKitAvailable
- * (which only checks platform); this confirms the prebuild native module is present.
+ * [DEBUG] Always true — the JS fetch path has no native module to load.
+ * Kept so useWeatherContext debug state reports cleanly without a code change.
  * Remove with the rest of the debug surface when done.
  */
 export function isWeatherKitModuleLoaded(): boolean {
-  return getModule() !== null;
+  return true;
 }
 
 /**
- * Fetch today's weather for the given coordinates.
+ * Fetch today's weather for the given coordinates via Open-Meteo.
  *
- * Requests only current + daily data. Today's daily entry is `daily[0]`.
- * Returns null on any failure so callers can degrade gracefully.
+ * Returns null on any failure so callers degrade gracefully.
+ * No API key required. No authentication.
  *
  * @param latitude   Device latitude from expo-location.
  * @param longitude  Device longitude from expo-location.
@@ -96,38 +84,33 @@ export async function fetchTodayWeather(
   latitude: number,
   longitude: number,
 ): Promise<WeatherPayload | null> {
-  const wk = getModule();
-  if (!wk) return null;
-
   try {
-    const result = await wk.getWeatherQuery({
-      latitude,
-      longitude,
-      current: true,
-      daily: true,
-    });
+    const url =
+      `https://api.open-meteo.com/v1/forecast` +
+      `?latitude=${latitude}` +
+      `&longitude=${longitude}` +
+      `&current=temperature_2m,weathercode` +
+      `&daily=temperature_2m_max` +
+      `&temperature_unit=fahrenheit` +
+      `&forecast_days=1` +
+      `&timezone=auto`;
 
-    // daily[0] is always today when no dailyRange is specified.
-    const today = result?.daily?.[0];
-    if (today == null) return null;
+    const res = await fetch(url);
+    if (!res.ok) return null;
 
-    const forecastHighF = toFahrenheit(
-      today.high,
-      today.highUnit ?? '°C',
-    );
+    const data = await res.json();
 
-    let currentTempF: number | null = null;
-    if (result?.current?.temperature != null) {
-      currentTempF = toFahrenheit(
-        result.current.temperature,
-        result.current.temperatureUnit ?? '°C',
-      );
-    }
+    const forecastHighF: number | undefined = data?.daily?.temperature_2m_max?.[0];
+    if (forecastHighF == null) return null;
 
-    const conditionSummary: string | null =
-      typeof result?.current?.condition === 'string'
-        ? result.current.condition
+    const currentTempF: number | null =
+      typeof data?.current?.temperature_2m === 'number'
+        ? data.current.temperature_2m
         : null;
+
+    const wmoCode: number | undefined = data?.current?.weathercode;
+    const conditionSummary: string | null =
+      wmoCode != null ? (WMO_CONDITION[wmoCode] ?? null) : null;
 
     return { forecastHighF, currentTempF, conditionSummary };
   } catch (e) {

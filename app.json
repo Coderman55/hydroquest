@@ -19,9 +19,7 @@
         "ITSAppUsesNonExemptEncryption": false,
         "NSLocationWhenInUseUsageDescription": "HydroQuest uses your location to detect local weather conditions and provide more personalized hydration guidance."
       },
-      "entitlements": {
-        "com.apple.developer.weatherkit": true
-      }
+      "entitlements": {}
     },
     "android": {
       "adaptiveIcon": {
@@ -38,7 +36,7 @@
       [
         "@kingstinct/react-native-healthkit",
         {
-          "NSHealthShareUsageDescription": "HydroQuest does not currently read your health data. This permission is reserved for a future update.",
+          "NSHealthShareUsageDescription": "HydroQuest reads your step count to suggest a personalized activity level and provide context-aware hydration guidance.",
           "NSHealthUpdateUsageDescription": "HydroQuest writes your water intake to Apple Health so you can view hydration alongside your other health data.",
           "background": false
         }
