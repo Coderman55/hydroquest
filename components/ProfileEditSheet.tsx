@@ -11,6 +11,7 @@ import {
   Platform,
   Pressable,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -200,7 +201,11 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate }: Props) {
         </View>
 
         {/* ── Fields ────────────────────────────────────────────────────────── */}
-        <View style={styles.body}>
+        <ScrollView
+          style={styles.body}
+          contentContainerStyle={styles.bodyContent}
+          showsVerticalScrollIndicator={false}
+        >
 
           {/* Climate */}
           <View style={styles.fieldBlock}>
@@ -332,7 +337,7 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate }: Props) {
             </View>
           )}
 
-        </View>
+        </ScrollView>
 
         {/* ── Footer: Save ──────────────────────────────────────────────────── */}
         <View style={styles.footer}>
@@ -385,8 +390,11 @@ const styles = StyleSheet.create({
   // ── Body ──────────────────────────────────────────────────────────────────────
   body: {
     flex: 1,
+  },
+  bodyContent: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.xl,
+    paddingBottom: spacing.lg,
     gap: spacing.xl,
   },
   fieldBlock: {

@@ -61,7 +61,7 @@ const RULER_W = 44;
 // FILL_INTERVAL_MS   : how often the preview level increments by 1 oz during hold.
 // HOLD_HAPTIC_BUCKET : haptic fires each time fill crosses this many oz.
 const HOLD_THRESHOLD_MS    = 400;
-const FILL_INTERVAL_MS     = 80;
+const FILL_INTERVAL_MS     = 150;
 const HOLD_HAPTIC_BUCKET_OZ = 4;
 
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
