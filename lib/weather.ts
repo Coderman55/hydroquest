@@ -1,7 +1,6 @@
 // HydroQuest — JS weather adapter (Open-Meteo).
 //
-// Replaces the former expo-weather-kit native adapter. Same public API — only
-// the fetch mechanism changed. No API key. No auth. Pure network call.
+// No API key or authentication is required.
 //
 // Caller contract (unchanged):
 //   The caller must supply coordinates. This file does NOT request location
@@ -10,7 +9,7 @@
 
 import { Platform } from 'react-native';
 
-// ─── Narrow payload — only what Weather v1 needs ──────────────────────────────
+// ─── Narrow payload — only what the weather context needs ────────────────────
 
 export type WeatherPayload = {
   /** Today's forecast high in Fahrenheit. Used for climate bucket classification. */
@@ -51,24 +50,31 @@ const WMO_CONDITION: Record<number, string> = {
   99: 'Thunderstorm',
 };
 
+const REQUEST_TIMEOUT_MS = 10_000;
+const MIN_REASONABLE_TEMP_F = -150;
+const MAX_REASONABLE_TEMP_F = 150;
+
+function isFiniteTemperature(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= MIN_REASONABLE_TEMP_F &&
+    value <= MAX_REASONABLE_TEMP_F
+  );
+}
+
+function isValidWmoCode(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 99;
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
  * Returns true when weather context is available on this platform.
- * iOS only — mirrors the former WeatherKit platform gate so ProfileEditSheet
- * and useWeatherContext need no changes.
+ * iOS only — retained for compatibility with the existing opt-in flow.
  */
-export function isWeatherKitAvailable(): boolean {
+export function isWeatherAvailable(): boolean {
   return Platform.OS === 'ios';
-}
-
-/**
- * [DEBUG] Always true — the JS fetch path has no native module to load.
- * Kept so useWeatherContext debug state reports cleanly without a code change.
- * Remove with the rest of the debug surface when done.
- */
-export function isWeatherKitModuleLoaded(): boolean {
-  return true;
 }
 
 /**
@@ -84,6 +90,20 @@ export async function fetchTodayWeather(
   latitude: number,
   longitude: number,
 ): Promise<WeatherPayload | null> {
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
   try {
     const url =
       `https://api.open-meteo.com/v1/forecast` +
@@ -95,20 +115,26 @@ export async function fetchTodayWeather(
       `&forecast_days=1` +
       `&timezone=auto`;
 
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: controller.signal });
     if (!res.ok) return null;
 
     const data = await res.json();
 
-    const forecastHighF: number | undefined = data?.daily?.temperature_2m_max?.[0];
-    if (forecastHighF == null) return null;
+    const dailyMax = data?.daily?.temperature_2m_max;
+    if (!Array.isArray(dailyMax)) return null;
+    const forecastHighF: unknown = dailyMax[0];
+    if (!isFiniteTemperature(forecastHighF)) return null;
 
+    const rawCurrentTempF: unknown = data?.current?.temperature_2m;
+    if (rawCurrentTempF != null && !isFiniteTemperature(rawCurrentTempF)) return null;
     const currentTempF: number | null =
-      typeof data?.current?.temperature_2m === 'number'
-        ? data.current.temperature_2m
-        : null;
+      rawCurrentTempF == null
+        ? null
+        : rawCurrentTempF;
 
-    const wmoCode: number | undefined = data?.current?.weathercode;
+    const rawWmoCode: unknown = data?.current?.weathercode;
+    if (rawWmoCode != null && !isValidWmoCode(rawWmoCode)) return null;
+    const wmoCode = isValidWmoCode(rawWmoCode) ? rawWmoCode : null;
     const conditionSummary: string | null =
       wmoCode != null ? (WMO_CONDITION[wmoCode] ?? null) : null;
 
@@ -116,8 +142,10 @@ export async function fetchTodayWeather(
   } catch (e) {
     if (__DEV__) {
       // eslint-disable-next-line no-console
-      console.warn('[weatherKit] fetchTodayWeather failed:', e);
+      console.warn('[weather] fetchTodayWeather failed:', e);
     }
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

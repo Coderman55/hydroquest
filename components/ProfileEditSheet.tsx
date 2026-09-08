@@ -25,7 +25,7 @@ import {
   requestHealthKitAuthorization,
   requestHealthKitActivityAuthorization,
 } from '../lib/healthKit';
-import { isWeatherKitAvailable } from '../lib/weatherKit';
+import { isWeatherAvailable } from '../lib/weather';
 import type { WeatherContext } from '../lib/useWeatherContext';
 import type { HKActivityContext } from '../lib/useHealthKitActivity';
 
@@ -215,7 +215,7 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherCon
       setWeatherContextEnabled(false);
       return;
     }
-    if (!isWeatherKitAvailable()) {
+    if (!isWeatherAvailable()) {
       // Should not be reachable since the section is iOS-only, but guard anyway.
       return;
     }
@@ -433,9 +433,9 @@ export function ProfileEditSheet({ visible, onClose, detectedClimate, weatherCon
                 <Text style={styles.debugValue}>{weatherContext.status}</Text>
               </Text>
               <Text style={styles.debugRow}>
-                {'Network:     '}
+                {'Provider:    '}
                 <Text style={styles.debugValue}>
-                  {weatherContext._debug.moduleAvailable ? 'available' : 'unavailable'}
+                  Open-Meteo
                 </Text>
               </Text>
               <Text style={styles.debugRow}>

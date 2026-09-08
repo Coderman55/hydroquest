@@ -89,11 +89,11 @@ export function HomeScreen() {
   const weatherContextEnabled      = useProfileStore((s) => s.weatherContextEnabled);
   const healthKitActivityEnabled   = useProfileStore((s) => s.healthKitActivityEnabled);
 
-  // Ephemeral weather context — fetches once per session when enabled.
+  // Ephemeral weather context — refreshes on foreground and local midnight.
   // Never persisted; degrades silently on any failure or denied permission.
   const weather = useWeatherContext(weatherContextEnabled);
 
-  // Ephemeral HealthKit activity context — reads step count once per session.
+  // Ephemeral activity context — refreshes on foreground, midnight, and 6 PM.
   // Never persisted; degrades silently on any failure or denied permission.
   // Manual activityLevel in the store remains the only goal-driving source of truth.
   const hkActivity = useHealthKitActivity(healthKitActivityEnabled);

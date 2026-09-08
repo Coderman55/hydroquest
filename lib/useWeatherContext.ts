@@ -1,178 +1,106 @@
-// HydroQuest — Ephemeral weather context hook.
-//
-// Fetches once on mount (or when enabled flips to true).
-// Never persisted — stale weather context is worse than no context.
-// No store writes. No automatic climate or goal changes.
-//
-// Permission contract:
-//   Permission is requested by ProfileEditSheet as part of the opt-in flow.
-//   This hook only CHECKS whether permission is already granted.
-//   If permission has been revoked since opt-in, status returns 'denied'
-//   and the app degrades gracefully without re-prompting.
-
-import { useEffect, useState } from 'react';
+// Ephemeral weather context. It refreshes only while the app is active and is
+// never written to a profile or goal.
+import { useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 
-import { fetchTodayWeather, isWeatherKitAvailable, isWeatherKitModuleLoaded } from './weatherKit';
+import { fetchTodayWeather, isWeatherAvailable } from './weather';
+import { createContextRefreshLifecycle, createRefreshGeneration, resolveWithin } from './contextRefreshLifecycle';
+import { getTodayString } from './dateUtils';
 import type { Climate } from '../constants';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export type WeatherStatus =
-  | 'disabled'      // weatherContextEnabled is false — do not fetch
-  | 'idle'          // enabled but fetch not yet started
-  | 'loading'       // fetch in progress
-  | 'success'       // fetch succeeded — weather state is populated
-  | 'denied'        // location permission not granted — degrade silently
-  | 'unavailable'   // non-iOS platform or WeatherKit not available
-  | 'error';        // location or weather fetch threw — degrade silently
-
-/** [DEBUG] Snapshot of intermediate pipeline state for in-app debugging. Remove with debug surface. */
+export type WeatherStatus = 'disabled' | 'idle' | 'loading' | 'success' | 'denied' | 'unavailable' | 'error';
 export type WeatherDebugInfo = {
-  /** Whether expo-weather-kit native module actually loaded (vs just being on iOS). */
-  moduleAvailable: boolean;
-  /** Raw iOS permission status string from getForegroundPermissionsAsync. */
   permissionStatus: string | null;
-  /** Whether getCurrentPositionAsync returned coordinates. */
   hasCoords: boolean;
-  /** Short error message from the last failure point in the pipeline. */
   lastError: string | null;
 };
-
 export type WeatherContext = {
   status: WeatherStatus;
-  /** Climate bucket classified from today's forecast high. null when unavailable. */
   detectedClimate: Climate | null;
-  /** Current temperature in °F. Flavor-only. null when unavailable. */
   currentTempF: number | null;
-  /** Short condition string (e.g. "Clear", "Partly Cloudy"). Flavor-only. */
   conditionSummary: string | null;
-  /** [DEBUG] Intermediate pipeline state for in-app debugging. Remove with debug surface. */
   _debug: WeatherDebugInfo;
 };
 
-// ─── Classification ───────────────────────────────────────────────────────────
-// Uses the locked thresholds from the HydroQuest climate model.
-// forecastHighF < 60   → 'cool'
-// forecastHighF <= 80  → 'moderate'
-// forecastHighF > 80   → 'hot'
+const LOCATION_TIMEOUT_MS = 12_000;
+const emptyDebug = (): WeatherDebugInfo => ({ permissionStatus: null, hasCoords: false, lastError: null });
+function classifyClimate(high: number): Climate { return high < 60 ? 'cool' : high <= 80 ? 'moderate' : 'hot'; }
 
-function classifyClimate(forecastHighF: number): Climate {
-  if (forecastHighF < 60) return 'cool';
-  if (forecastHighF <= 80) return 'moderate';
-  return 'hot';
-}
-
-// ─── Hook ─────────────────────────────────────────────────────────────────────
-
-/**
- * Returns ephemeral weather context for the current session.
- *
- * @param enabled  Pass `weatherContextEnabled` from the profile store.
- *                 When false, returns immediately with status 'disabled'.
- */
 export function useWeatherContext(enabled: boolean): WeatherContext {
-  const [status, setStatus] = useState<WeatherStatus>(
-    enabled ? 'idle' : 'disabled',
-  );
+  const [status, setStatus] = useState<WeatherStatus>(enabled ? 'idle' : 'disabled');
   const [detectedClimate, setDetectedClimate] = useState<Climate | null>(null);
-  const [currentTempF, setCurrentTempF]       = useState<number | null>(null);
+  const [currentTempF, setCurrentTempF] = useState<number | null>(null);
   const [conditionSummary, setConditionSummary] = useState<string | null>(null);
-  const [_debug, setDebug] = useState<WeatherDebugInfo>({
-    moduleAvailable: false,
-    permissionStatus: null,
-    hasCoords: false,
-    lastError: null,
-  });
+  const [_debug, setDebug] = useState<WeatherDebugInfo>(emptyDebug);
+  const generationRef = useRef(createRefreshGeneration());
 
   useEffect(() => {
-    // ── Disabled path ───────────────────────────────────────────────────────
-    if (!enabled) {
-      setStatus('disabled');
-      setDetectedClimate(null);
-      setCurrentTempF(null);
-      setConditionSummary(null);
-      setDebug({ moduleAvailable: false, permissionStatus: null, hasCoords: false, lastError: null });
-      return;
-    }
-
-    // ── Platform guard ──────────────────────────────────────────────────────
-    if (!isWeatherKitAvailable()) {
-      setStatus('unavailable');
-      return;
-    }
-
-    let cancelled = false;
-
-    async function fetchWeather() {
-      try {
-        setStatus('loading');
-
-        // [DEBUG] JS fetch path — isWeatherKitModuleLoaded always returns true.
-        if (!cancelled) setDebug(prev => ({ ...prev, moduleAvailable: isWeatherKitModuleLoaded() }));
-
-        // Check permission — do NOT request it; that is ProfileEditSheet's job.
-        const { status: locStatus } =
-          await Location.getForegroundPermissionsAsync();
-        if (!cancelled) setDebug(prev => ({ ...prev, permissionStatus: locStatus }));
-
-        if (locStatus !== Location.PermissionStatus.GRANTED) {
-          if (!cancelled) setStatus('denied');
-          return;
-        }
-
-        // Get current position at city-level accuracy — sufficient for weather.
-        let latitude: number;
-        let longitude: number;
-        try {
-          const loc = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          });
-          latitude  = loc.coords.latitude;
-          longitude = loc.coords.longitude;
-          if (!cancelled) setDebug(prev => ({ ...prev, hasCoords: true }));
-        } catch (err) {
-          if (!cancelled) {
-            setDebug(prev => ({ ...prev, lastError: `Location fetch: ${String(err)}` }));
-            setStatus('error');
-          }
-          return;
-        }
-
-        const payload = await fetchTodayWeather(latitude, longitude);
-
-        if (cancelled) return;
-
-        if (!payload) {
-          setDebug(prev => ({ ...prev, lastError: 'fetchTodayWeather returned null — network fetch failed or bad response' }));
-          setStatus('error');
-          return;
-        }
-
-        setDetectedClimate(classifyClimate(payload.forecastHighF));
-        setCurrentTempF(payload.currentTempF);
-        setConditionSummary(payload.conditionSummary);
-        setStatus('success');
-      } catch (err) {
-        // Safety net — catches any unexpected synchronous throw (e.g. native
-        // module unavailable) so status never hangs at 'loading' indefinitely.
-        if (!cancelled) {
-          if (__DEV__) {
-            // eslint-disable-next-line no-console
-            console.warn('[useWeatherContext] fetchWeather threw unexpectedly:', err);
-          }
-          setDebug(prev => ({ ...prev, lastError: `Unexpected: ${String(err)}` }));
-          setStatus('error');
-        }
-      }
-    }
-
-    fetchWeather();
-
-    return () => {
-      cancelled = true;
+    const generation = generationRef.current;
+    const clear = (nextStatus: WeatherStatus, error: string | null = null, resetDebug = true) => {
+      setDetectedClimate(null); setCurrentTempF(null); setConditionSummary(null);
+      if (resetDebug) setDebug({ ...emptyDebug(), lastError: error });
+      setStatus(nextStatus);
     };
-  }, [enabled]);
+    if (!enabled) { generation.invalidate(); clear('disabled'); return; }
+    if (!isWeatherAvailable()) { generation.invalidate(); clear('unavailable'); return; }
 
+    let disposed = false;
+    const refresh = () => {
+      const request = generation.begin();
+      const requestedDate = getTodayString();
+      clear('loading');
+      const valid = () => !disposed && generation.isCurrent(request);
+      const retryForNewDay = () => {
+        if (valid() && getTodayString() !== requestedDate) refresh();
+      };
+      void (async () => {
+        try {
+          const permission = await resolveWithin(Location.getForegroundPermissionsAsync(), LOCATION_TIMEOUT_MS);
+          if (!valid()) return;
+          if (getTodayString() !== requestedDate) { retryForNewDay(); return; }
+          if (!permission) { clear('error', 'Location permission check timed out or failed'); return; }
+          setDebug(prev => ({ ...prev, permissionStatus: permission.status }));
+          if (permission.status !== Location.PermissionStatus.GRANTED) { clear('denied', null, false); return; }
+          const location = await resolveWithin(
+            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }), LOCATION_TIMEOUT_MS,
+          );
+          if (!valid()) return;
+          if (getTodayString() !== requestedDate) { retryForNewDay(); return; }
+          if (!location) { clear('error', 'Location request timed out or failed'); return; }
+          setDebug(prev => ({ ...prev, hasCoords: true }));
+          const payload = await fetchTodayWeather(location.coords.latitude, location.coords.longitude);
+          if (!valid()) return;
+          if (getTodayString() !== requestedDate) { retryForNewDay(); return; }
+          if (!payload) { clear('error', 'Weather request failed'); return; }
+          setDetectedClimate(classifyClimate(payload.forecastHighF));
+          setCurrentTempF(payload.currentTempF); setConditionSummary(payload.conditionSummary); setStatus('success');
+        } catch (error) {
+          if (valid()) clear('error', `Unexpected: ${String(error)}`);
+        }
+      })();
+    };
+    const makeLifecycle = () => createContextRefreshLifecycle({ onBoundary: refresh, boundaries: [[0, 0]] });
+    let currentAppState = AppState.currentState;
+    let lifecycle: ReturnType<typeof makeLifecycle> | null = null;
+    if (currentAppState === 'active') {
+      lifecycle = makeLifecycle();
+      refresh();
+    }
+    const subscription = AppState.addEventListener('change', next => {
+      const wasActive = currentAppState === 'active';
+      currentAppState = next;
+      if (next === 'active' && !wasActive) {
+        lifecycle ??= makeLifecycle();
+        refresh();
+      } else if (next !== 'active' && wasActive) {
+        generation.invalidate();
+        clear('idle');
+        lifecycle?.();
+        lifecycle = null;
+      }
+    });
+    return () => { disposed = true; generation.invalidate(); lifecycle?.(); subscription.remove(); };
+  }, [enabled]);
   return { status, detectedClimate, currentTempF, conditionSummary, _debug };
 }
