@@ -28,8 +28,14 @@ let _hk: any = null;
 function getModule(): any | null {
   if (Platform.OS !== 'ios') return null;
   if (!_hk) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    _hk = require('@kingstinct/react-native-healthkit');
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      _hk = require('@kingstinct/react-native-healthkit');
+    } catch {
+      // HealthKit is optional at runtime; native module loading can fail on
+      // unsupported builds and must degrade to the existing no-op behavior.
+      return null;
+    }
   }
   return _hk;
 }

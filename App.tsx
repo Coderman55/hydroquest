@@ -1,14 +1,14 @@
 // HydroQuest — Root app shell.
 // Responsibilities:
 //   1. Guard rendering until both stores finish rehydrating from AsyncStorage.
-//   2. Run runNewDayCheck() exactly once per cold start after stores are ready.
+//   2. Keep aggregate hydration state current at startup, foreground, and midnight.
 //   3. Route to OnboardingFlow or HomeScreen based on onboardingComplete.
 //   4. In __DEV__, render a small visible "DEV" pill in the top-left safe-area
 //      that toggles DevDebugPanel as a full-screen overlay over HomeScreen.
 
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { AppState, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { DevDebugPanel } from './components/DevDebugPanel';
 import { HomeScreen } from './components/HomeScreen';
@@ -21,35 +21,110 @@ import { useProfileStore } from './store/useProfileStore';
 
 export default function App() {
   // Use fine-grained selectors so only the fields we care about trigger re-renders.
-  const profileHydrated    = useProfileStore((s) => s.hasHydrated);
-  const hydrationHydrated  = useHydrationStore((s) => s.hasHydrated);
+  const profilePersistenceStatus = useProfileStore((s) => s.persistenceStatus);
+  const hydrationPersistenceStatus = useHydrationStore((s) => s.persistenceStatus);
+  const retryProfileHydration = useProfileStore((s) => s.retryHydration);
+  const retryHydration = useHydrationStore((s) => s.retryHydration);
   const onboardingComplete = useProfileStore((s) => s.onboardingComplete);
 
-  // Profile fields needed to pass to runNewDayCheck.
-  const weightLb     = useProfileStore((s) => s.weightLb);
-  const age          = useProfileStore((s) => s.age);
-  const sex          = useProfileStore((s) => s.sex);
-  const activityLevel = useProfileStore((s) => s.activityLevel);
-  const climate      = useProfileStore((s) => s.climate);
-  const runNewDayCheck = useHydrationStore((s) => s.runNewDayCheck);
+  const bothStoresReady =
+    profilePersistenceStatus === 'ready' && hydrationPersistenceStatus === 'ready';
+  const hasPersistenceError =
+    profilePersistenceStatus === 'error' || hydrationPersistenceStatus === 'error';
+  const [initialDayCheckComplete, setInitialDayCheckComplete] = useState(false);
 
-  const isLoading = !profileHydrated || !hydrationHydrated;
+  const runCurrentDayCheck = useCallback(() => {
+    const profile = useProfileStore.getState();
+    useHydrationStore.getState().runNewDayCheck({
+      weightLb: profile.weightLb,
+      age: profile.age,
+      sex: profile.sex,
+      activityLevel: profile.activityLevel,
+      climate: profile.climate,
+    });
+  }, []);
 
-  // Run new-day check exactly once after both stores finish loading from AsyncStorage.
-  // The ref prevents it from re-firing if any dependency identity changes later.
-  const newDayCheckRan = useRef(false);
+  // Route only after the initial rollover has finished, so HomeScreen cannot
+  // accept a mutation carrying yesterday's aggregate state into today's ledger.
   useEffect(() => {
-    if (!isLoading && !newDayCheckRan.current) {
-      newDayCheckRan.current = true;
-      runNewDayCheck({ weightLb, age, sex, activityLevel, climate });
+    if (bothStoresReady && !initialDayCheckComplete) {
+      runCurrentDayCheck();
+      setInitialDayCheckComplete(true);
     }
-  }, [isLoading, runNewDayCheck, weightLb, age, sex, activityLevel, climate]);
+  }, [bothStoresReady, initialDayCheckComplete, runCurrentDayCheck]);
+
+  // Check at every local midnight while foregrounded. Background transitions
+  // cancel the timer; a foreground transition checks immediately and reschedules.
+  useEffect(() => {
+    if (!bothStoresReady || !initialDayCheckComplete) return;
+
+    let midnightTimer: ReturnType<typeof setTimeout> | null = null;
+    let currentAppState = AppState.currentState;
+    const clearMidnightTimer = () => {
+      if (midnightTimer !== null) clearTimeout(midnightTimer);
+      midnightTimer = null;
+    };
+    const scheduleMidnightCheck = () => {
+      clearMidnightTimer();
+      if (currentAppState !== 'active') return;
+      const now = new Date();
+      const nextMidnight = new Date(now);
+      nextMidnight.setHours(24, 0, 0, 0);
+      midnightTimer = setTimeout(() => {
+        runCurrentDayCheck();
+        scheduleMidnightCheck();
+      }, Math.max(1, nextMidnight.getTime() - now.getTime()));
+    };
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      const enteringForeground = nextAppState === 'active' && currentAppState !== 'active';
+      currentAppState = nextAppState;
+      if (enteringForeground) {
+        runCurrentDayCheck();
+        scheduleMidnightCheck();
+      } else if (nextAppState !== 'active') {
+        clearMidnightTimer();
+      }
+    });
+
+    scheduleMidnightCheck();
+    return () => {
+      clearMidnightTimer();
+      subscription.remove();
+    };
+  }, [bothStoresReady, initialDayCheckComplete, runCurrentDayCheck]);
 
   // Dev-only: toggle the debug overlay.
   const [showDebugPanel, setShowDebugPanel] = useState(false);
 
   // ── Loading gate ─────────────────────────────────────────────────────────────
-  if (isLoading) {
+  if (!bothStoresReady && !hasPersistenceError) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.loadingText}>Loading…</Text>
+        <StatusBar style="auto" />
+      </View>
+    );
+  }
+
+  if (hasPersistenceError) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.loadingText}>Your saved data could not be loaded.</Text>
+        <Pressable
+          style={styles.retryButton}
+          onPress={() => {
+            if (profilePersistenceStatus === 'error') retryProfileHydration();
+            if (hydrationPersistenceStatus === 'error') retryHydration();
+          }}
+        >
+          <Text style={styles.retryLabel}>Retry</Text>
+        </Pressable>
+        <StatusBar style="auto" />
+      </View>
+    );
+  }
+
+  if (!initialDayCheckComplete) {
     return (
       <View style={styles.center}>
         <Text style={styles.loadingText}>Loading…</Text>
@@ -116,6 +191,18 @@ const styles = StyleSheet.create({
     fontSize: fontSize.body,
     color: palette.inkSoft,
   },
+  retryButton: {
+    marginTop: 16,
+    backgroundColor: palette.ink,
+    borderRadius: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+  },
+  retryLabel: {
+    color: palette.white,
+    fontSize: fontSize.body,
+    fontWeight: '600',
+  },
 
   // Dev trigger pill — position absolute, top-left, clears status bar.
   // Visible only in __DEV__; does not exist in production bundles.
@@ -160,4 +247,3 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
-

@@ -3,7 +3,8 @@
 //
 // This store calls into the hydration store via `useHydrationStore.getState()`
 // to write goal updates after onboarding completion or climate change.
-// The hydration store does NOT import this store — dependency is one-way.
+// Hydration reads profile lazily only at a mutation boundary, avoiding an
+// initialization-time import cycle.
 
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
@@ -19,7 +20,12 @@ import {
   type Sex,
 } from '../constants';
 import { calculateGoal } from '../lib/calculateGoal';
+import { createRecoverableStorage } from '../lib/recoverableStorage';
 import { useHydrationStore } from './useHydrationStore';
+
+type PersistenceStatus = 'loading' | 'ready' | 'error';
+const recoverableStorage = createRecoverableStorage(AsyncStorage);
+let updatePersistenceStatus: ((value: PersistenceStatus) => void) | null = null;
 
 // ---------- Editable onboarding fields (used by setProfileField) ----------
 type EditableProfileFields = {
@@ -48,6 +54,8 @@ type ProfileState = EditableProfileFields & {
   weatherContextEnabled: boolean;
   /** True after persist middleware finishes loading from AsyncStorage. */
   hasHydrated: boolean;
+  /** Transient persistence state. Error keeps the app behind a retry gate. */
+  persistenceStatus: PersistenceStatus;
 };
 
 type ProfileActions = {
@@ -86,11 +94,13 @@ type ProfileActions = {
    */
   setWeatherContextEnabled: (value: boolean) => void;
   setHasHydrated: (value: boolean) => void;
+  setPersistenceStatus: (value: PersistenceStatus) => void;
+  retryHydration: () => void;
   /** Reset everything to initial state. Used by debug "Reset All". */
   resetProfile: () => void;
 };
 
-const initialState: Omit<ProfileState, 'hasHydrated'> = {
+const initialState: Omit<ProfileState, 'hasHydrated' | 'persistenceStatus'> = {
   schemaVersion: SCHEMA_VERSION,
   onboardingComplete: false,
   healthKitEnabled: false,
@@ -107,9 +117,14 @@ const initialState: Omit<ProfileState, 'hasHydrated'> = {
 
 export const useProfileStore = create<ProfileState & ProfileActions>()(
   persist(
-    (set, get) => ({
+    (set, get) => {
+      updatePersistenceStatus = (value) => {
+        set({ persistenceStatus: value, hasHydrated: value === 'ready' });
+      };
+      return ({
       ...initialState,
       hasHydrated: false,
+      persistenceStatus: 'loading',
 
       setProfileField: (field, value) => {
         // The dynamic-key set requires a cast — TS can't statically prove
@@ -207,14 +222,28 @@ export const useProfileStore = create<ProfileState & ProfileActions>()(
         set({ hasHydrated: value });
       },
 
+      setPersistenceStatus: (value) => {
+        updatePersistenceStatus?.(value);
+      },
+
+      retryHydration: () => {
+        recoverableStorage.closeWrites();
+        set({ hasHydrated: false, persistenceStatus: 'loading' });
+        useProfileStore.persist.rehydrate();
+      },
+
       resetProfile: () => {
         set({ ...initialState });
       },
-    }),
+    });
+    },
     {
       name: PROFILE_STORE_KEY,
-      storage: createJSONStorage(() => AsyncStorage),
-      // Persist all profile fields. Exclude hasHydrated (transient).
+      storage: createJSONStorage(() => recoverableStorage),
+      // Defer the first read until the exported store is initialized; this
+      // makes synchronous AsyncStorage adapter failures recoverable too.
+      skipHydration: true,
+      // Persist all profile fields. Exclude recovery fields (transient).
       partialize: (state) => ({
         schemaVersion: state.schemaVersion,
         onboardingComplete: state.onboardingComplete,
@@ -230,12 +259,22 @@ export const useProfileStore = create<ProfileState & ProfileActions>()(
         bottleColor: state.bottleColor,
       }),
       onRehydrateStorage: () => (state, error) => {
-        if (error && __DEV__) {
+        if (error) {
+          recoverableStorage.closeWrites();
+          // Zustand passes undefined state on rehydrate failure. This state
+          // update is safe because the guarded adapter is still closed.
+          updatePersistenceStatus?.('error');
+          if (__DEV__) {
           // eslint-disable-next-line no-console
-          console.warn('[useProfileStore] rehydrate error:', error);
+            console.warn('[useProfileStore] rehydrate error:', error);
+          }
+          return;
         }
-        state?.setHasHydrated(true);
+        recoverableStorage.openWrites();
+        updatePersistenceStatus?.('ready');
       },
     },
   ),
 );
+
+void Promise.resolve().then(() => useProfileStore.persist.rehydrate());

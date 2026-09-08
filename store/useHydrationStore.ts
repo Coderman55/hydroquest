@@ -22,6 +22,11 @@ import {
   type GoalResult,
 } from '../lib/calculateGoal';
 import { getDaysBetween, getTodayString, getUtcIsoTimestamp } from '../lib/dateUtils';
+import { createRecoverableStorage } from '../lib/recoverableStorage';
+
+type PersistenceStatus = 'loading' | 'ready' | 'error';
+const recoverableStorage = createRecoverableStorage(AsyncStorage);
+let updatePersistenceStatus: ((value: PersistenceStatus) => void) | null = null;
 import { writeDrinkSample, deleteDrinkSample } from '../lib/healthKit';
 
 // ---------- Event ledger types ----------
@@ -119,9 +124,13 @@ type HydrationState = {
   lastEventId: string | null;
   /** True after persist middleware finishes loading from AsyncStorage. */
   hasHydrated: boolean;
+  /** Transient persistence state. Error keeps the app behind a retry gate. */
+  persistenceStatus: PersistenceStatus;
 };
 
 type HydrationActions = {
+  /** Ensure aggregate day state is current before accepting a mutation. */
+  ensureCurrentDay: () => boolean;
   /** Add water to today's intake. Rejects 0, negative, NaN, non-finite. */
   logWater: (amountOz: number) => void;
   /**
@@ -142,6 +151,9 @@ type HydrationActions = {
   runNewDayCheck: (profile: GoalInputs) => void;
   /** Internal: marks the store as fully rehydrated from AsyncStorage. */
   setHasHydrated: (value: boolean) => void;
+  setPersistenceStatus: (value: PersistenceStatus) => void;
+  /** Retry a failed AsyncStorage restore without allowing a default-state write. */
+  retryHydration: () => void;
   /** Reset everything to initial state. Used by debug "Reset All". */
   resetHydration: () => void;
   /**
@@ -156,7 +168,7 @@ type HydrationActions = {
   _setLastOpenedDateToYesterday: () => void;
 };
 
-const initialState: Omit<HydrationState, 'hasHydrated'> = {
+const initialState: Omit<HydrationState, 'hasHydrated' | 'persistenceStatus'> = {
   schemaVersion: SCHEMA_VERSION,
   todayIntakeOz: 0,
   dailyGoalOz: DEFAULT_GOAL_OZ,
@@ -172,6 +184,10 @@ const initialState: Omit<HydrationState, 'hasHydrated'> = {
 
 function isPositiveFinite(n: number): boolean {
   return Number.isFinite(n) && n > 0;
+}
+
+function deleteDrinkSampleBestEffort(hkSampleUuid: string): void {
+  void deleteDrinkSample(hkSampleUuid).catch(() => {});
 }
 
 function shiftDateStringBackOneDay(dateString: string | null): string | null {
@@ -190,11 +206,37 @@ function shiftDateStringBackOneDay(dateString: string | null): string | null {
 
 export const useHydrationStore = create<HydrationState & HydrationActions>()(
   persist(
-    (set, get) => ({
+    (set, get) => {
+      updatePersistenceStatus = (value) => {
+        set({ persistenceStatus: value, hasHydrated: value === 'ready' });
+      };
+      return ({
       ...initialState,
       hasHydrated: false,
+      persistenceStatus: 'loading',
+
+      // Every user mutation crosses this boundary first. The ledger remains
+      // supporting data; runNewDayCheck resets aggregate day state directly.
+      ensureCurrentDay: () => {
+        const state = get();
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { useProfileStore } = require('./useProfileStore') as typeof import('./useProfileStore');
+        const profile = useProfileStore.getState();
+        if (state.persistenceStatus !== 'ready' || profile.persistenceStatus !== 'ready') {
+          return false;
+        }
+        state.runNewDayCheck({
+          weightLb: profile.weightLb,
+          age: profile.age,
+          sex: profile.sex,
+          activityLevel: profile.activityLevel,
+          climate: profile.climate,
+        });
+        return true;
+      },
 
       logWater: (amountOz) => {
+        if (!get().ensureCurrentDay()) return;
         if (!isPositiveFinite(amountOz)) {
           if (__DEV__) {
             // eslint-disable-next-line no-console
@@ -263,24 +305,34 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           const { useProfileStore } = require('./useProfileStore') as typeof import('./useProfileStore');
           if (useProfileStore.getState().healthKitEnabled) {
-            writeDrinkSample(amountOz, drinkEvent.timestampIsoUtc).then((hkUuid) => {
-              if (hkUuid) {
-                // Attach the HealthKit UUID to the event so undoLastAction can
-                // delete it. Uses functional set to safely read current ledger.
+            void writeDrinkSample(amountOz, drinkEvent.timestampIsoUtc)
+              .then((hkUuid) => {
+                if (!hkUuid) return;
+
+                // The event can disappear while this non-blocking write is pending
+                // (undo/reset). In that case, clean up the sample just created.
+                if (!get().eventLedger.some((event) => event.id === eventId)) {
+                  deleteDrinkSampleBestEffort(hkUuid);
+                  return;
+                }
+
+                // The immutable event id binds an out-of-order Health completion
+                // to its original drink, independent of the current undo action.
                 set((prev) => ({
-                  eventLedger: prev.eventLedger.map((e) =>
-                    e.id === eventId
-                      ? ({ ...e, hkSampleUuid: hkUuid } as HydrationEvent)
-                      : e,
+                  eventLedger: prev.eventLedger.map((event) =>
+                    event.id === eventId
+                      ? ({ ...event, hkSampleUuid: hkUuid } as HydrationEvent)
+                      : event,
                   ),
                 }));
-              }
-            });
+              })
+              .catch(() => {});
           }
         }
       },
 
       setBottleLevel: (oz) => {
+        if (!get().ensureCurrentDay()) return;
         if (!Number.isFinite(oz) || oz < 0) {
           if (__DEV__) {
             // eslint-disable-next-line no-console
@@ -292,6 +344,7 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
       },
 
       refillBottle: (targetLevelOz) => {
+        if (!get().ensureCurrentDay()) return;
         if (!isPositiveFinite(targetLevelOz)) {
           if (__DEV__) {
             // eslint-disable-next-line no-console
@@ -329,6 +382,7 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
       },
 
       setGoal: ({ recommendedGoalOz, dailyGoalOz }) => {
+        if (!get().ensureCurrentDay()) return;
         set({ recommendedGoalOz, dailyGoalOz });
       },
 
@@ -394,12 +448,23 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
         set({ hasHydrated: value });
       },
 
+      setPersistenceStatus: (value) => {
+        updatePersistenceStatus?.(value);
+      },
+
+      retryHydration: () => {
+        recoverableStorage.closeWrites();
+        set({ hasHydrated: false, persistenceStatus: 'loading' });
+        useHydrationStore.persist.rehydrate();
+      },
+
       resetHydration: () => {
         // initialState includes eventLedger: [], lastAction: null, lastEventId: null.
         set({ ...initialState });
       },
 
       undoLastAction: () => {
+        if (!get().ensureCurrentDay()) return;
         const { lastAction, lastEventId, eventLedger } = get();
         if (lastAction === null) return;
 
@@ -449,7 +514,7 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
         // Local undo is already committed above. If the HealthKit delete fails,
         // the sample becomes orphaned in the Health app — acceptable for v1.
         if (hkUuidToDelete) {
-          deleteDrinkSample(hkUuidToDelete);
+          deleteDrinkSampleBestEffort(hkUuidToDelete);
         }
       },
 
@@ -461,10 +526,14 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
           lastGoalHitDate: shiftDateStringBackOneDay(state.lastGoalHitDate),
         });
       },
-    }),
+    });
+    },
     {
       name: HYDRATION_STORE_KEY,
-      storage: createJSONStorage(() => AsyncStorage),
+      storage: createJSONStorage(() => recoverableStorage),
+      // Start after the store exists so even a synchronously-throwing adapter
+      // can enter the retry state without referencing an uninitialized export.
+      skipHydration: true,
       // Zustand persist version: bumped to 2 to register the new migration path.
       // This is a separate numeric counter from the schemaVersion string in state.
       version: 2,
@@ -486,7 +555,7 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
       // Persisted: schemaVersion, todayIntakeOz, dailyGoalOz, recommendedGoalOz,
       //            streakCount, lastOpenedDate, lastGoalHitDate, bottleLevelOz,
       //            eventLedger.
-      // Not persisted: lastAction, lastEventId, hasHydrated.
+      // Not persisted: lastAction, lastEventId, hasHydrated, persistenceStatus.
       partialize: (state) => ({
         schemaVersion: state.schemaVersion,
         todayIntakeOz: state.todayIntakeOz,
@@ -499,12 +568,23 @@ export const useHydrationStore = create<HydrationState & HydrationActions>()(
         eventLedger: state.eventLedger,
       }),
       onRehydrateStorage: () => (state, error) => {
-        if (error && __DEV__) {
+        if (error) {
+          recoverableStorage.closeWrites();
+          // `state` is undefined on persist errors, so use the initialized
+          // store action. The guarded adapter suppresses this write.
+          updatePersistenceStatus?.('error');
+          if (__DEV__) {
           // eslint-disable-next-line no-console
-          console.warn('[useHydrationStore] rehydrate error:', error);
+            console.warn('[useHydrationStore] rehydrate error:', error);
+          }
+          return;
         }
-        state?.setHasHydrated(true);
+        // Open only after JSON parse, migration, and merge have all succeeded.
+        recoverableStorage.openWrites();
+        updatePersistenceStatus?.('ready');
       },
     },
   ),
 );
+
+void Promise.resolve().then(() => useHydrationStore.persist.rehydrate());
